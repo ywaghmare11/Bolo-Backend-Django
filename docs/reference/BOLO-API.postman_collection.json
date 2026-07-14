@@ -1,0 +1,1093 @@
+{
+  "info": {
+    "name": "BOLO API",
+    "description": "Complete BOLO REST API collection.\n\n**Setup:**\n1. Set `baseUrl` variable → `http://localhost:3000`\n2. **Dev mode:** Call `POST /api/v1/auth/dev-login` with a demo email + password `bolo1234`\n3. **Prod mode:** Call `POST /api/v1/auth/request-otp` → get OTP from email → `POST /api/v1/auth/verify-otp`\n4. Cookie `token` is set automatically — all protected requests use it.\n\n**Tenant scoping:** `tenantId` comes from the JWT cookie — never send it in the body.\n**Dates:** All date fields returned in IST (+05:30) e.g. `2026-06-28T14:30:00.000+05:30`.\n\n**Demo accounts (dev-login only):**\n- sarangjadhav661@gmail.com — TOP (Dean, USR00001)\n- shivam.a@college.edu — MID (HoD, USR00003)\n- riya.sharma@college.edu — EXECUTOR (Faculty, USR00007)\n- yogesh.kamble@college.edu — EXECUTOR (Faculty, USR00005)",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "baseUrl",        "value": "http://localhost:3000", "type": "string" },
+    { "key": "taskId",         "value": "", "type": "string" },
+    { "key": "subtaskId",      "value": "", "type": "string" },
+    { "key": "commentId",      "value": "", "type": "string" },
+    { "key": "projectLabelId", "value": "", "type": "string" },
+    { "key": "personalLabelId","value": "", "type": "string" },
+    { "key": "noteId",         "value": "", "type": "string" },
+    { "key": "broadcastId",    "value": "", "type": "string" },
+    { "key": "notificationId", "value": "", "type": "string" },
+    { "key": "evidenceId",     "value": "", "type": "string" },
+    { "key": "userId",         "value": "", "type": "string" },
+    { "key": "invitedUserId",  "value": "", "type": "string" },
+    { "key": "deptId",         "value": "", "type": "string" }
+  ],
+  "item": [
+
+    {
+      "name": "Health",
+      "item": [
+        {
+          "name": "Health Check",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/v1/health",
+            "description": "Public — no auth required."
+          }
+        }
+      ]
+    },
+
+    {
+      "name": "Onboarding",
+      "item": [
+        {
+          "name": "Register Tenant",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "if (pm.response.code === 201) {",
+                  "  const d = pm.response.json().data;",
+                  "  pm.collectionVariables.set('userId', d.admin.userId);",
+                  "  console.log('Tenant created:', d.tenantId, '| Admin userId:', d.admin.userId);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/api/v1/onboard/register",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"tenantName\": \"AIBIGO Institute\",\n  \"vertical\": \"EDUCATION\",\n  \"adminName\": \"Dr. Sarang Jadhav\",\n  \"adminEmail\": \"sarangjadhav661@gmail.com\",\n  \"adminPhone\": \"+919876543210\",\n  \"roleLabel\": \"Dean\",\n  \"preferredLang\": \"EN\"\n}"
+            },
+            "description": "Public — no auth required. Creates Tenant + first TOP user + TenantMembership atomically.\n\nvertical: EDUCATION | CA_CS\nroleLabel: optional — defaults to Dean (EDUCATION) or Director (CA_CS)\npreferredLang: EN | HI (optional, default EN)"
+          }
+        }
+      ]
+    },
+
+    {
+      "name": "Auth",
+      "item": [
+        {
+          "name": "Request OTP",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/api/v1/auth/request-otp",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"sarangjadhav661@gmail.com\"\n}"
+            },
+            "description": "Sends a 6-digit OTP to the email. Rate limited: 1 request per 60 seconds. OTP expires in 10 min."
+          }
+        },
+        {
+          "name": "Verify OTP (Login)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "if (pm.response.code === 200) {",
+                  "  const data = pm.response.json().data;",
+                  "  pm.collectionVariables.set('userId', data.userId);",
+                  "  console.log('Logged in as', data.name, '| role:', data.roleLevel);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/api/v1/auth/verify-otp",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"sarangjadhav661@gmail.com\",\n  \"otp\": \"123456\"\n}"
+            },
+            "description": "Exchange OTP for JWT. Sets httpOnly cookie token.\n\nLockout: 3 wrong attempts → 15 min lockout."
+          }
+        },
+        {
+          "name": "Logout",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/api/v1/auth/logout",
+            "description": "Clears the token cookie server-side."
+          }
+        }
+      ]
+    },
+
+    {
+      "name": "Tasks",
+      "item": [
+        {
+          "name": "List Tasks",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/tasks?view=delegated&page=1&limit=20",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1","tasks"],
+              "query": [
+                { "key": "view",       "value": "delegated",  "description": "REQUIRED: assigned | delegated | needs_attention" },
+                { "key": "labelId",    "value": "",           "description": "Filter by project label ID", "disabled": true },
+                { "key": "isArchived", "value": "false",      "description": "true | false (default false)", "disabled": true },
+                { "key": "page",       "value": "1" },
+                { "key": "limit",      "value": "20",         "description": "Max 100" }
+              ]
+            },
+            "description": "view is REQUIRED:\n- assigned — tasks where YOU are the assignee (excludes DRAFT, DONE_D, CANCELLED)\n- delegated — tasks where YOU are the assigner (excludes DONE_D)\n- needs_attention — tasks where you are assigner or assignee AND status is OPEN/OVERDUE/DONE_A\n\nResponse: { data: { data: Task[], pagination: { page, limit, total } } }\nEach Task row includes commentCount (number) and latestComment (id, authorId, authorName, text, isEdited, createdAt — null if no comments yet), a lightweight preview of the most recent comment. Use GET /tasks/:id/comments or GET /tasks/:id for the full thread.\nAll dates in IST (+05:30)."
+          }
+        },
+        {
+          "name": "Task Counts",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/tasks/counts",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "tasks", "counts"]
+            },
+            "description": "Returns dashboard tab counts for the calling user — no query params, no pagination.\n\nResponse: { success: true, data: { assigned: number, delegated: number, needsAttention: number } }\n\nUses the same filter logic as GET /tasks?view=... (assigned/delegated/needs_attention) so counts stay consistent with the list endpoint."
+          }
+        },
+        {
+          "name": "Create Task",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "if (pm.response.code === 201) {",
+                  "  const id = pm.response.json().data?.id;",
+                  "  if (id) pm.collectionVariables.set('taskId', id);",
+                  "  console.log('taskId saved:', id);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/api/v1/tasks",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"title\": \"Prepare semester exam schedule\",\n  \"assigneeId\": \"USR00007\",\n  \"dueDate\": \"2026-07-15T18:30:00.000Z\",\n  \"priority\": \"P2\",\n  \"description\": \"Include all departments. Submit to Dean by June 30.\"\n}"
+            },
+            "description": "Required: title + assigneeId.\nOptional: dueDate, priority (P1-P4, default P3), description, projectLabelId, voiceRecording.\n\nNo dueDate → status = DRAFT\nWith dueDate → status = OPEN\ntitle is immutable after creation\n\nOptional voice recording:\n{\n  \"voiceRecording\": {\n    \"rawTranscript\": \"Schedule semester exams\",\n    \"language\": \"hi-en\",\n    \"durationSecs\": 8,\n    \"confidenceScore\": 0.92\n  }\n}"
+          }
+        },
+        {
+          "name": "Get Task",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/v1/tasks/{{taskId}}",
+            "description": "Full task detail including subtasks[], comments[], evidence[], myPersonalLabels[], voiceRecording.\n\nReturns 403 if caller is neither assigner nor assignee.\nAll dates in IST (+05:30)."
+          }
+        },
+        {
+          "name": "Update Task",
+          "request": {
+            "method": "PATCH",
+            "url": "{{baseUrl}}/api/v1/tasks/{{taskId}}",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"dueDate\": \"2026-07-20T18:30:00.000Z\",\n  \"priority\": \"P1\",\n  \"description\": \"Updated description\"\n}"
+            },
+            "description": "Assigner only. Editable: assigneeId, dueDate, priority, projectLabelId, description.\n\n- title is immutable → 400 TITLE_IMMUTABLE\n- Cannot update once DONE_D or CANCELLED → 409 TASK_TERMINAL\n- Cannot reassign if subtasks exist → 409 REASSIGN_BLOCKED\n- Setting dueDate: null reverts task to DRAFT\n\nTo reassign: { \"assigneeId\": \"USR00003\" }\nTo clear label: { \"projectLabelId\": null }"
+          }
+        },
+        {
+          "name": "Delete Task",
+          "request": {
+            "method": "DELETE",
+            "url": "{{baseUrl}}/api/v1/tasks/{{taskId}}",
+            "description": "Assigner only. Recursively deletes all subtasks, comments, evidence, personal labels.\nCannot delete DONE_D → 400 TASK_TERMINAL."
+          }
+        },
+        {
+          "name": "Accept Task",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/api/v1/tasks/{{taskId}}/accept",
+            "description": "Assignee only. OPEN → IN_PROGRESS. Sets acceptedAt.\nReturns { status: 'IN_PROGRESS', acceptedAt: '...+05:30' }."
+          }
+        },
+        {
+          "name": "Mark Done-A (Assignee)",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/api/v1/tasks/{{taskId}}/done-a",
+            "description": "Assignee only. IN_PROGRESS | OVERDUE → DONE_A.\nAssigner must then call done-d to archive the task."
+          }
+        },
+        {
+          "name": "Mark Done-D (Assigner)",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/api/v1/tasks/{{taskId}}/done-d",
+            "description": "Assigner only. Confirms completion → DONE_D + archives (isArchived: true).\nAll subtasks must be DONE_D first → 409 SUBTASKS_INCOMPLETE."
+          }
+        },
+        {
+          "name": "Cancel Task",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/api/v1/tasks/{{taskId}}/cancel",
+            "description": "Assigner only. Cascades CANCELLED to all non-DONE_D subtasks.\nCannot cancel DONE_D → 400 TASK_TERMINAL."
+          }
+        },
+        {
+          "name": "Send Reminder",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/api/v1/tasks/{{taskId}}/remind",
+            "description": "Assigner only. Sends reminder notification to assignee.\nValid states: OPEN, IN_PROGRESS, OVERDUE."
+          }
+        }
+      ]
+    },
+
+    {
+      "name": "Subtasks",
+      "description": "Subtasks are nested under their parent task. Same Task model with parentTaskId set.\nGet subtask detail via GET /api/tasks/:subtaskId.",
+      "item": [
+        {
+          "name": "Create Subtask",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "if (pm.response.code === 201) {",
+                  "  const id = pm.response.json().data?.id;",
+                  "  if (id) pm.collectionVariables.set('subtaskId', id);",
+                  "  console.log('subtaskId saved:', id);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/api/v1/tasks/{{taskId}}/subtasks",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"title\": \"Collect dept timetables\",\n  \"assigneeId\": \"USR00005\",\n  \"dueDate\": \"2026-07-10T18:30:00.000Z\",\n  \"priority\": \"P2\",\n  \"description\": \"Gather from all 6 departments\"\n}"
+            },
+            "description": "Parent task assignee only. Parent must be IN_PROGRESS.\n\nRequired: title, assigneeId, dueDate.\ndueDate must be earlier than parent dueDate → 400 SUBTASK_DUE_DATE_INVALID.\nassigneeId cannot be the parent task assigner → 400 ASSIGNMENT_LOOP."
+          }
+        },
+        {
+          "name": "Get Subtask Detail",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/v1/tasks/{{subtaskId}}",
+            "description": "Use the main GET /api/tasks/:id endpoint with the subtask ID.\nResponse includes parentTaskId to identify it as a subtask."
+          }
+        },
+        {
+          "name": "Update Subtask",
+          "request": {
+            "method": "PATCH",
+            "url": "{{baseUrl}}/api/v1/tasks/{{taskId}}/subtasks/{{subtaskId}}",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"dueDate\": \"2026-07-08T18:30:00.000Z\",\n  \"priority\": \"P1\"\n}"
+            },
+            "description": "Subtask assigner (= parent task assignee) only. Same field rules as PATCH /tasks/:id."
+          }
+        },
+        {
+          "name": "Delete Subtask",
+          "request": {
+            "method": "DELETE",
+            "url": "{{baseUrl}}/api/v1/tasks/{{taskId}}/subtasks/{{subtaskId}}",
+            "description": "Subtask assigner only. Cannot delete once DONE_D."
+          }
+        },
+        {
+          "name": "Accept Subtask",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/api/v1/tasks/{{taskId}}/subtasks/{{subtaskId}}/accept",
+            "description": "Subtask assignee only. OPEN → IN_PROGRESS."
+          }
+        },
+        {
+          "name": "Mark Subtask Done-A",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/api/v1/tasks/{{taskId}}/subtasks/{{subtaskId}}/done-a",
+            "description": "Subtask assignee only. IN_PROGRESS | OVERDUE → DONE_A."
+          }
+        },
+        {
+          "name": "Mark Subtask Done-D",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/api/v1/tasks/{{taskId}}/subtasks/{{subtaskId}}/done-d",
+            "description": "Subtask assigner only (= parent task assignee). DONE_A → DONE_D.\nOnce all subtasks are DONE_D, parent assigner can call POST /tasks/:id/done-d."
+          }
+        },
+        {
+          "name": "Cancel Subtask",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/api/v1/tasks/{{taskId}}/subtasks/{{subtaskId}}/cancel",
+            "description": "Subtask assigner only. Cannot cancel once DONE_D → 400."
+          }
+        }
+      ]
+    },
+
+    {
+      "name": "Comments",
+      "item": [
+        {
+          "name": "List Comments",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/tasks/{{taskId}}/comments?page=1&limit=20",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1","tasks", "{{taskId}}", "comments"],
+              "query": [
+                { "key": "page",  "value": "1" },
+                { "key": "limit", "value": "20" }
+              ]
+            },
+            "description": "Caller must be assigner or assignee. Sorted by createdAt ASC.\nComments are also returned in GET /api/tasks/:id as comments[]."
+          }
+        },
+        {
+          "name": "Add Comment",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "if (pm.response.code === 201) {",
+                  "  const id = pm.response.json().data?.id;",
+                  "  if (id) pm.collectionVariables.set('commentId', id);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/api/v1/tasks/{{taskId}}/comments",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"text\": \"Collected timetables from CSE and IT.\"\n}"
+            },
+            "description": "Both assigner and assignee can comment. Fires COMMENT_ADDED notification to the other party."
+          }
+        },
+        {
+          "name": "Edit Comment",
+          "request": {
+            "method": "PATCH",
+            "url": "{{baseUrl}}/api/v1/tasks/{{taskId}}/comments/{{commentId}}",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"text\": \"Updated comment text\"\n}"
+            },
+            "description": "Author only. Sets isEdited=true."
+          }
+        },
+        {
+          "name": "Delete Comment",
+          "request": {
+            "method": "DELETE",
+            "url": "{{baseUrl}}/api/v1/tasks/{{taskId}}/comments/{{commentId}}",
+            "description": "Author only."
+          }
+        }
+      ]
+    },
+
+    {
+      "name": "Evidence",
+      "description": "Two-step upload flow: get pre-signed S3 URL → PUT file directly to S3 → confirm upload.",
+      "item": [
+        {
+          "name": "Get Pre-signed Upload URL",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/api/v1/upload/presign",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"taskId\": \"{{taskId}}\",\n  \"filename\": \"timetable.pdf\",\n  \"contentType\": \"application/pdf\",\n  \"fileSize\": 204800\n}"
+            },
+            "description": "Step 1 of 2. Returns { uploadUrl, evidenceId, expiresIn }.\nClient PUTs the file directly to uploadUrl (S3), then calls Confirm Upload.\nCaller must be assigner or assignee."
+          }
+        },
+        {
+          "name": "List Evidence",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/v1/tasks/{{taskId}}/evidence",
+            "description": "Returns evidence for a task. File URLs are pre-signed S3 read URLs expiring in 1 hour.\nEvidence is also returned in GET /api/tasks/:id as evidence[]."
+          }
+        },
+        {
+          "name": "Confirm Upload (Record Evidence)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "if (pm.response.code === 201) {",
+                  "  const id = pm.response.json().data?.id;",
+                  "  if (id) pm.collectionVariables.set('evidenceId', id);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/api/v1/tasks/{{taskId}}/evidence",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"evidenceId\": \"{{evidenceId}}\",\n  \"caption\": \"Timetable draft for review\"\n}"
+            },
+            "description": "Step 2 of 2 — call after S3 PUT succeeds. Fires EVIDENCE_ATTACHED notification."
+          }
+        },
+        {
+          "name": "Delete Evidence",
+          "request": {
+            "method": "DELETE",
+            "url": "{{baseUrl}}/api/v1/tasks/{{taskId}}/evidence/{{evidenceId}}",
+            "description": "Uploader or assigner only. Deletes from S3 and DB."
+          }
+        }
+      ]
+    },
+
+    {
+      "name": "Personal Labels",
+      "description": "Tier-2 private labels — visible only to the user who added them. Both assigner and assignee can add labels independently.",
+      "item": [
+        {
+          "name": "Get My Personal Labels on Task",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/v1/tasks/{{taskId}}/personal-labels",
+            "description": "Returns only the calling user's labels — never returns other users' labels.\nAlso returned as myPersonalLabels[] in GET /api/tasks/:id."
+          }
+        },
+        {
+          "name": "Add Personal Label",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "if (pm.response.code === 201) {",
+                  "  const id = pm.response.json().data?.id;",
+                  "  if (id) pm.collectionVariables.set('personalLabelId', id);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/api/v1/tasks/{{taskId}}/personal-labels",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"label\": \"urgent\",\n  \"colorCode\": \"#EF4444\",\n  \"description\": \"Needs paperwork\"\n}"
+            },
+            "description": "colorCode optional (6-digit hex, defaults to #6B7280). description optional (defaults to null). Duplicate label by the same user on the same task → 400."
+          }
+        },
+        {
+          "name": "Remove Personal Label",
+          "request": {
+            "method": "DELETE",
+            "url": "{{baseUrl}}/api/v1/tasks/{{taskId}}/personal-labels/{{personalLabelId}}",
+            "description": "Owner only."
+          }
+        },
+        {
+          "name": "Personal Label Suggestions (Autocomplete)",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/v1/personal-labels/suggestions",
+            "description": "Returns distinct label strings the calling user has applied across all tasks — for the autocomplete dropdown."
+          }
+        }
+      ]
+    },
+
+    {
+      "name": "Project Labels",
+      "description": "Tier-1 shared labels — visible to all tenant members on a task.",
+      "item": [
+        {
+          "name": "List Project Labels",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/v1/project-labels",
+            "description": "Returns all labels scoped to the caller's tenant."
+          }
+        },
+        {
+          "name": "Create Project Label",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "if (pm.response.code === 201) {",
+                  "  const id = pm.response.json().data?.id;",
+                  "  if (id) pm.collectionVariables.set('projectLabelId', id);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/api/v1/project-labels",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"NAAC\",\n  \"colorCode\": \"#EF4444\",\n  \"description\": \"NAAC/NBA related tasks\"\n}"
+            },
+            "description": "Name must be unique within the tenant. colorCode optional (6-digit hex, defaults to #6B7280). description optional (defaults to null)."
+          }
+        },
+        {
+          "name": "Update Project Label (rename/recolor/redescribe)",
+          "request": {
+            "method": "PATCH",
+            "url": "{{baseUrl}}/api/v1/project-labels/{{projectLabelId}}",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"NAAC 2026\",\n  \"colorCode\": \"#10B981\",\n  \"description\": \"Updated scope\"\n}"
+            },
+            "description": "Creator only. Partial update — at least one of name, colorCode, description required."
+          }
+        },
+        {
+          "name": "Delete Project Label",
+          "request": {
+            "method": "DELETE",
+            "url": "{{baseUrl}}/api/v1/project-labels/{{projectLabelId}}",
+            "description": "Creator only. 400 LABEL_IN_USE if any active (non-DONE_D/CANCELLED) task references this label."
+          }
+        }
+      ]
+    },
+
+    {
+      "name": "Sticky Notes",
+      "description": "All notes are private — never shared with others. dueAt makes a note a reminder.",
+      "item": [
+        {
+          "name": "List Sticky Notes",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/sticky-notes?page=1&limit=20",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1","sticky-notes"],
+              "query": [
+                { "key": "page",  "value": "1" },
+                { "key": "limit", "value": "20" }
+              ]
+            },
+            "description": "Private — only the calling user's notes.\nSorted: pinned first → dueAt ASC (nulls last) → createdAt DESC."
+          }
+        },
+        {
+          "name": "Create Sticky Note",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "if (pm.response.code === 201) {",
+                  "  const id = pm.response.json().data?.id;",
+                  "  if (id) pm.collectionVariables.set('noteId', id);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/api/v1/sticky-notes",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"text\": \"Call registrar about hall booking\",\n  \"dueAt\": \"2026-07-01T09:00:00.000Z\",\n  \"isPinned\": false\n}"
+            },
+            "description": "dueAt is optional — when set the note acts as a reminder.\nisPinned: optional, default false."
+          }
+        },
+        {
+          "name": "Get Sticky Note",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/v1/sticky-notes/{{noteId}}",
+            "description": "Owner only."
+          }
+        },
+        {
+          "name": "Update Sticky Note",
+          "request": {
+            "method": "PATCH",
+            "url": "{{baseUrl}}/api/v1/sticky-notes/{{noteId}}",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"text\": \"Call registrar — confirmed 10 AM\",\n  \"dueAt\": null,\n  \"isPinned\": true\n}"
+            },
+            "description": "Owner only. Pass dueAt: null to clear the reminder."
+          }
+        },
+        {
+          "name": "Delete Sticky Note",
+          "request": {
+            "method": "DELETE",
+            "url": "{{baseUrl}}/api/v1/sticky-notes/{{noteId}}",
+            "description": "Owner only."
+          }
+        },
+        {
+          "name": "Promote to Task",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/api/v1/sticky-notes/{{noteId}}/promote",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"assigneeId\": \"USR00007\",\n  \"dueDate\": \"2026-07-10T18:30:00.000Z\"\n}"
+            },
+            "description": "Creates a Task using the note text as the title. Sets promotedToTaskId on the note.\nOmit assigneeId/dueDate to create as DRAFT.\n400 ALREADY_PROMOTED if already promoted."
+          }
+        }
+      ]
+    },
+
+    {
+      "name": "Broadcast Notices",
+      "description": "Requires canBroadcast: true on TenantMembership to create. Broadcasts expire after 24 hours.",
+      "item": [
+        {
+          "name": "List Active Broadcasts",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/broadcast-notices?page=1&limit=20",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1","broadcast-notices"],
+              "query": [
+                { "key": "page",  "value": "1" },
+                { "key": "limit", "value": "20" }
+              ]
+            },
+            "description": "Returns non-expired broadcasts where audience dept+roleLevel matches the caller."
+          }
+        },
+        {
+          "name": "Create Broadcast Draft",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "if (pm.response.code === 201) {",
+                  "  const id = pm.response.json().data?.id;",
+                  "  if (id) pm.collectionVariables.set('broadcastId', id);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/api/v1/broadcast-notices",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"messageJson\": {},\n  \"messageHtml\": \"<p>Exam dates: July 15-25. All faculty must submit question papers by July 12.</p>\",\n  \"audienceDeptId\": null,\n  \"audienceRoleLevel\": \"EXECUTOR\",\n  \"requiresAcknowledgement\": true,\n  \"imageUrl\": null\n}"
+            },
+            "description": "Requires canBroadcast: true on TenantMembership → 403 BROADCAST_NOT_PERMITTED otherwise.\nSave as draft first, then publish. ~200 char limit on visible text."
+          }
+        },
+        {
+          "name": "Edit Draft Broadcast",
+          "request": {
+            "method": "PATCH",
+            "url": "{{baseUrl}}/api/v1/broadcast-notices/{{broadcastId}}",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"messageHtml\": \"<p>Updated exam notice.</p>\",\n  \"audienceDeptId\": \"{{deptId}}\"\n}"
+            },
+            "description": "Sender only. Only DRAFT status can be edited → 400 BROADCAST_ALREADY_PUBLISHED if already published."
+          }
+        },
+        {
+          "name": "Delete Broadcast",
+          "request": {
+            "method": "DELETE",
+            "url": "{{baseUrl}}/api/v1/broadcast-notices/{{broadcastId}}",
+            "description": "Sender only."
+          }
+        },
+        {
+          "name": "Publish Broadcast",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/api/v1/broadcast-notices/{{broadcastId}}/publish",
+            "description": "DRAFT → PUBLISHED. Sets expiresAt = now+24h.\naudienceDeptId + audienceRoleLevel must both be set → 400 DRAFT_MISSING_FIELDS."
+          }
+        },
+        {
+          "name": "Acknowledge Broadcast",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/api/v1/broadcast-notices/{{broadcastId}}/ack",
+            "description": "Broadcast must be PUBLISHED, not expired, and requiresAcknowledgement=true.\n409 ALREADY_ACKNOWLEDGED if called again."
+          }
+        },
+        {
+          "name": "Get Acknowledgement Count",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/v1/broadcast-notices/{{broadcastId}}/ack-count",
+            "description": "Sender only. Returns { broadcastId, ackCount }. Sender sees count only — no per-person breakdown."
+          }
+        }
+      ]
+    },
+
+    {
+      "name": "Notifications",
+      "description": "In-app only; system-generated. Client polls on an interval.",
+      "item": [
+        {
+          "name": "List My Notifications",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/notifications?page=1&limit=20",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1","notifications"],
+              "query": [
+                { "key": "isRead", "value": "false", "description": "true | false — omit to get all", "disabled": true },
+                { "key": "page",   "value": "1" },
+                { "key": "limit",  "value": "20" }
+              ]
+            },
+            "description": "Returns recipientId=me rows only."
+          }
+        },
+        {
+          "name": "Get Unread Count (Badge)",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/v1/notifications/unread-count",
+            "description": "Cheap COUNT query — used by top-bar icon badge. Returns { count: 7 }."
+          }
+        },
+        {
+          "name": "Mark Notification Read",
+          "request": {
+            "method": "PATCH",
+            "url": "{{baseUrl}}/api/v1/notifications/{{notificationId}}/read",
+            "description": "Sets isRead=true, readAt=now."
+          }
+        },
+        {
+          "name": "Mark All Notifications Read",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/api/v1/notifications/mark-all-read",
+            "description": "Returns { updatedCount: 7 }."
+          }
+        }
+      ]
+    },
+
+    {
+      "name": "Users (Me)",
+      "item": [
+        {
+          "name": "Get My Profile",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/v1/me",
+            "description": "Returns name, email, preferredLang, tenantName, roleLevel, roleLabel, departmentName, reportsToName, canBroadcast."
+          }
+        },
+        {
+          "name": "Update My Profile",
+          "request": {
+            "method": "PATCH",
+            "url": "{{baseUrl}}/api/v1/me",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Dr. Sarang Jadhav\",\n  \"preferredLang\": \"HI\"\n}"
+            },
+            "description": "Only name and preferredLang (EN|HI) are editable."
+          }
+        }
+      ]
+    },
+
+    {
+      "name": "Tenant",
+      "item": [
+        {
+          "name": "Get Tenant Info",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/v1/tenant",
+            "description": "TOP role only. Returns tenant name, vertical, memberCount, deptCount."
+          }
+        },
+        {
+          "name": "List Members",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/tenant/members?page=1&limit=50",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1","tenant", "members"],
+              "query": [
+                { "key": "roleLevel", "value": "EXECUTOR", "description": "TOP | MID | EXECUTOR", "disabled": true },
+                { "key": "deptId",    "value": "",         "description": "Filter by department ID", "disabled": true },
+                { "key": "page",      "value": "1" },
+                { "key": "limit",     "value": "50" }
+              ]
+            },
+            "description": "Any authenticated member. Used for the assignee picker."
+          }
+        },
+        {
+          "name": "Invite Member",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "if (pm.response.code === 201) {",
+                  "  const uid = pm.response.json().data?.userId;",
+                  "  if (uid) pm.collectionVariables.set('invitedUserId', uid);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/api/v1/tenant/members/invite",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Prof. Riya Sharma\",\n  \"email\": \"riya.sharma@college.edu\",\n  \"roleLevel\": \"EXECUTOR\",\n  \"roleLabel\": \"Faculty\",\n  \"departmentId\": null,\n  \"reportsToId\": null,\n  \"canBroadcast\": false\n}"
+            },
+            "description": "TOP role only. Creates User + TenantMembership atomically."
+          }
+        },
+        {
+          "name": "Remove Member",
+          "request": {
+            "method": "DELETE",
+            "url": "{{baseUrl}}/api/v1/tenant/members/{{invitedUserId}}",
+            "description": "TOP role only. Cannot remove self → 403."
+          }
+        },
+        {
+          "name": "Get Org Chart",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/v1/tenant/org-chart",
+            "description": "TOP and MID roles. Flat list with reportsToId links — build tree client-side."
+          }
+        },
+        {
+          "name": "Bulk Import Members — Excel",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/api/v1/tenant/onboard/import",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "file",
+                  "type": "file",
+                  "src": "",
+                  "description": ".xlsx or .xls. Columns: name, email, roleLevel, roleLabel, departmentName, phone, canBroadcast. Max 5 MB."
+                }
+              ]
+            },
+            "description": "TOP only. Idempotent upsert by email. Auto-creates departments. Returns { created, updated, skipped, errors }."
+          }
+        },
+        {
+          "name": "Bulk Import Members — JSON",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/api/v1/tenant/onboard/import",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"members\": [\n    {\n      \"name\": \"Dr. Amit Verma\",\n      \"email\": \"amit.verma@college.edu\",\n      \"roleLevel\": \"MID\",\n      \"roleLabel\": \"HoD\",\n      \"departmentName\": \"Computer Science\",\n      \"canBroadcast\": true\n    }\n  ]\n}"
+            },
+            "description": "TOP only. JSON alternative to Excel upload. Same idempotent upsert behaviour."
+          }
+        }
+      ]
+    },
+
+    {
+      "name": "Departments",
+      "item": [
+        {
+          "name": "List Departments",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/v1/departments",
+            "description": "Any authenticated tenant member. Returns id, name, headUserId, headName, memberCount."
+          }
+        },
+        {
+          "name": "Get Department",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "if (pm.response.code === 200) {",
+                  "  const id = pm.response.json().data?.id;",
+                  "  if (id) pm.collectionVariables.set('deptId', id);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/v1/departments/{{deptId}}",
+            "description": "Any authenticated member. 404 if department belongs to a different tenant."
+          }
+        },
+        {
+          "name": "Update Department",
+          "request": {
+            "method": "PATCH",
+            "url": "{{baseUrl}}/api/v1/departments/{{deptId}}",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Computer Science & Engineering\",\n  \"headUserId\": \"{{userId}}\"\n}"
+            },
+            "description": "TOP role only. Pass headUserId: null to clear the head.\n409 HEAD_ALREADY_ASSIGNED if user already heads another department."
+          }
+        }
+      ]
+    },
+
+    {
+      "name": "Search",
+      "item": [
+        {
+          "name": "Full-text Search",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/search?q=exam&page=1&limit=20",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1","search"],
+              "query": [
+                { "key": "q",     "value": "exam",  "description": "Search string (min 2 chars)" },
+                { "key": "type",  "value": "",      "description": "task | sticky_note | broadcast | comment — omit to search all", "disabled": true },
+                { "key": "page",  "value": "1" },
+                { "key": "limit", "value": "20" }
+              ]
+            },
+            "description": "Full-text search scoped to tenantId + entities the caller can access.\nReturns snippets with highlights."
+          }
+        }
+      ]
+    },
+
+    {
+      "name": "Audit Log",
+      "item": [
+        {
+          "name": "Query Audit Log",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/audit-log?entityType=TASK&entityId={{taskId}}&page=1&limit=50",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1","audit-log"],
+              "query": [
+                { "key": "entityType", "value": "TASK",       "description": "TASK | BROADCAST | USER | STICKY_NOTE | PROJECT_LABEL" },
+                { "key": "entityId",   "value": "{{taskId}}", "description": "Filter by entity ID" },
+                { "key": "actorId",    "value": "",           "description": "Filter by actor user ID", "disabled": true },
+                { "key": "from",       "value": "2026-06-01", "description": "ISO date YYYY-MM-DD", "disabled": true },
+                { "key": "to",         "value": "2026-06-30", "description": "ISO date YYYY-MM-DD", "disabled": true },
+                { "key": "page",       "value": "1" },
+                { "key": "limit",      "value": "50" }
+              ]
+            },
+            "description": "Access: TOP role OR assigner of the entity. Tenant-scoped."
+          }
+        }
+      ]
+    },
+
+    {
+      "name": "Analytics",
+      "item": [
+        {
+          "name": "Member Effectiveness Stats",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/analytics/members?from=2026-06-01&to=2026-06-30",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1","analytics", "members"],
+              "query": [
+                { "key": "deptId", "value": "{{deptId}}", "description": "Filter by department", "disabled": true },
+                { "key": "from",   "value": "2026-06-01", "description": "YYYY-MM-DD" },
+                { "key": "to",     "value": "2026-06-30", "description": "YYYY-MM-DD" }
+              ]
+            },
+            "description": "TOP sees all departments; MID sees own department only.\nRefreshed once daily — not real-time.\nReturns totalTasks, onTime, beforeTime, overdue, effectivenessScore per member."
+          }
+        }
+      ]
+    }
+
+  ]
+}

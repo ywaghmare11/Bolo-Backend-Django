@@ -180,7 +180,7 @@ docker-compose up
 
 | File | Purpose |
 |---|---|
-| `docker-compose.yml` | Full stack. SMTP/OpenAI/Sarvam keys read from `.env` via Compose substitution. |
+| `docker-compose.yml` | Full stack. `SES_FROM_EMAIL`/OpenAI/Sarvam keys read from `.env` via Compose substitution (updated 2026-07-18 — was `SMTP_*`). |
 | `observability/alloy-config.alloy` | Alloy pipeline: Docker log discovery → label promotion → Loki; /metrics scrape → Prometheus; OTLP → Jaeger. |
 | `observability/prometheus.yml` | Minimal Prometheus config — no scrape_configs (Alloy does scraping, Prometheus is remote_write target only). |
 | `observability/grafana-datasources.yml` | Provisions Prometheus, Loki, Jaeger datasources. Loki datasource includes trace_id derived field. |

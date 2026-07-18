@@ -3,7 +3,7 @@
 > Read this file completely at the start of every Claude Code session.
 > This is the single source of truth for **this project only**.
 > **This is a standalone Django + DRF re-implementation of the BOLO backend** (originally Node/Express/Prisma, in the sibling `Bolo/` repo). It is a **port, not a redesign** — same API contract, same domain model, same business rules. `bolo-web` (React, in the original `Bolo/` repo) is a completely separate project and only talks to whichever backend is running over HTTP, via `VITE_API_URL`. Nothing in `bolo-web` needs to change for this project to work, as long as the contract in `docs/api/api-spec.md` is honored exactly.
-> **Last updated:** 2026-07-14 — project scaffolded (docs + CLAUDE.md + guidelines.md only, no Django code yet); migrated from Windows to Linux as the build machine, sibling `Bolo/` repo path updated accordingly.
+> **Last updated:** 2026-07-19 — Phase 2 complete: `common` app foundation (response envelope, exception handler, pagination, permissions), OTP→JWT auth (`apps/auth`), and a core Task lifecycle vertical slice (`apps/tasks` + minimal `apps/labels`), see `changelog.md` for the full breakdown. **Deliberate deviation from `docs/ops/security.md`'s locked W1 decision:** the user asked for real access+refresh token handling beyond the original's single long-lived cookie — implemented as a 15-min JWT access token + rotating opaque refresh token with reuse-detection; `docs/ops/security.md`'s Authentication section was rewritten to match, so it no longer contradicts the code. Audit logging (Architecture Rules point 8) is still deferred — not built this phase. Subtasks, comments, evidence, voice recording, and full label CRUD are Phase 3. Previously: 2026-07-18 — re-synced `docs/` from the original repo (now reachable at `/home/test/Desktop/Python_Project/BOLO/Bolo`) and reworked Phase 1 models to match the drift found (label model redesign, new `platform_admin` app, `User`/`NudgeSkipCounter` field changes, new enum values); Phase 1 (domain models) complete before that.
 
 ---
 
@@ -30,7 +30,7 @@
 | Database | Shared Postgres instance (Prisma-owned migrations) | **Its own fresh Postgres database** — Django owns migrations from scratch, schema mirrors `docs/reference/schema.prisma.reference` table-for-table (same table/column names, so the wire contract stays identical) |
 | Docs | `docs/` (git-ignored, local source of truth) | `docs/` copied in at scaffold time — treat as the binding contract for API shape and business rules; **not** a place to invent new rules |
 
-**Do not assume this project reads or writes to the original repo's database.** They are two fully independent deployments of the same product spec. If you need current business-rule context beyond what's in this repo's `docs/`, the original repo (when available) lives at `~/Projects/Bolo/` — read its `CLAUDE.md`/`docs/` for extra background, but this repo's copies are what govern implementation here. **Note (2026-07-14, Linux migration):** the sibling `Bolo/` repo is not present on this machine — this project was copied from Windows and is now being built standalone on Linux, so treat this repo's own `docs/` as fully self-sufficient rather than expecting the sibling repo to be reachable.
+**Do not assume this project reads or writes to the original repo's database.** They are two fully independent deployments of the same product spec. If you need current business-rule context beyond what's in this repo's `docs/`, the original repo lives at `/home/test/Desktop/Python_Project/BOLO/Bolo` (its Node backend at `.../BOLO/Bolo/bolo-backend`) — read its `CLAUDE.md`/`docs/` for extra background, but this repo's copies are what govern implementation here. **Note (2026-07-18):** the sibling repo is reachable again at the path above (moved since the 2026-07-14 Windows→Linux migration, when it was not present) — `docs/` was re-synced from it on this date; re-check for drift periodically rather than assuming this repo's copy stays current on its own.
 
 ---
 
@@ -73,6 +73,7 @@ State in 1–2 sentences: what was done and what files changed.
 | Async / background jobs | Celery + Redis | Notification dispatch, broadcast fan-out, reminder/due-date cron, daily analytics pre-compute |
 | API docs | drf-spectacular | OpenAPI schema generated from code — keep in sync with `docs/api/api-spec.md`, don't let them drift |
 | Object storage | S3-compatible via `boto3` | Evidence files via pre-signed URLs, same as original |
+| Transactional email | AWS SES via `boto3` | Reminder/due-date types only (see Business Rules). Matches the original's 2026-07-18 decision (was SMTP/nodemailer) — IAM-role-only via the default credential provider chain, same pattern as S3, no separate SMTP secret to manage |
 | Env config | `django-environ` | `.env` per environment, validated at startup — crash early if a required var is missing |
 | Testing | `pytest-django` + `factory_boy` | Real Postgres test DB, no mocking the database |
 | Serialization | DRF serializers | One serializer per direction where request/response shapes differ (see api-spec.md) |
@@ -86,12 +87,13 @@ This project keeps the **same strict layering discipline** as the original Node 
 ### Controller → Service → Repository (STRICT — same as original)
 
 1. **View** (`views.py` / DRF `APIView` or `ViewSet`): HTTP only — parse the request, call the service, return the response via the shared envelope helper. No business logic. No ORM calls.
-2. **Service** (`services.py` or `services/`): business logic only. No `request`/`response` objects. No direct Django ORM calls — calls the repository. This is the **only** place `AuditService.log()` is called.
+2. **Service** (`services.py` or `services/`): business logic only. No `request`/`response` objects. No direct Django ORM calls — calls the repository. **Services never call an audit-log function directly** — see the Audit Logging rule below (point 8), which is the opposite pattern from Notifications (point 7).
 3. **Repository** (`repositories.py` or `repositories/`): the only place `Model.objects....` / QuerySets are touched. No business logic — just queries, always filtered by `tenant_id` where applicable.
 4. Always return via the shared response helper — never a raw DRF `Response({...})` built ad hoc in a view.
 5. Permission classes (DRF `permissions.py`) on every view — no exceptions. Tenant scope is the universal guard; org-role checks use a custom `HasOrgRole` permission; task-level (assigner/assignee) checks live in the service layer.
 6. `tenant_id` always comes from the decoded JWT (via the custom authentication class, exposed as `request.tenant_id`) — **never** from the request body or query params.
 7. **Every service that changes task, subtask, or broadcast state — check `docs/api/api-spec.md` §11 for whether a `Notification` should fire.** Wire it through a `dispatch_notification()` service call — never a raw `NotificationRepository.create()` and never inline email logic. If the event type isn't in the table yet, add it there before wiring the call site.
+8. **Audit logging is generic, not dispatched.** Matches the original's 2026-07-14 redesign (W98/W99) — deliberately the *opposite* pattern from point 7's Notifications. A DRF middleware (`apps/common/audit_middleware.py`, planned) paired with a static route-config table (`apps/common/audit_route_config.py`, planned — one row per `{method, resolver_match.view_name}` → `{entity_type, model, action | resolve_action(before, after)}`) observes every mutating request generically: reads before-state via the configured model before the view runs, captures after-state from the response body, and writes the `AuditLog` row only if the response succeeded (`status_code < 400`) — queued as a Celery task so the write never blocks the response (Django has no direct equivalent of Express's post-response hook; a fire-and-forget Celery task is the idiomatic substitute). **No service or view ever calls an audit-log function directly** — a new mutating route gets audited by adding one row to the config table, not by editing the handler. **The one documented exception:** login/logout has no entity mutation for the middleware to observe, so `User.last_login_at`/`last_logout_at` are written directly by the auth service for their own legitimate session-tracking purpose, and the middleware picks up `USER_LOGIN`/`USER_LOGOUT` off of *that* write the same generic way as everything else.
 
 Response helpers (always — never a raw `Response({...})`):
 ```python
@@ -107,8 +109,8 @@ return failure_response("Not found", status=404, code="TASK_NOT_FOUND")  # 4xx
 ### Task Rules
 - Task needs only **title + assignee** to create (saves as Draft). **Due date is required to transition Draft → Open.**
 - **Assigner (Delegator)** can: edit assignee, due date, priority, main label, description; comment; attach evidence; send reminder; mark complete (DoneD); cancel; delete; reassign. **Cannot** create subtasks. **Cannot** edit title.
-- **Assignee** can: write progress comments, attach evidence, mark complete (DoneA), create subtasks, add personal labels.
-- **Both** assigner and assignee can add personal labels (private to each).
+- **Assignee** can: write progress comments, attach evidence, mark complete (DoneA), create subtasks, set their own private label.
+- **Label model (redesigned — no separate personal-label table):** a single `ProjectLabel` pool per creator, referenced by two FKs on `Task` — `main_label` (assigner sets, visible to everyone who can see the task) and `assignee_label` (assignee sets, private, never returned to non-assignees, cleared on reassignment). Each user sees only labels they created (`created_by = request.user`). Deleting a label in use is blocked (`on_delete=PROTECT`).
 - **Two-step completion:** assignee marks **DoneA** → assigner marks **DoneD** (archives the task). A main task reaches DoneD only when all subtasks are `DONE_D`.
 - Task **cannot be reassigned** once any subtask exists.
 - Every task/subtask must be **accepted by the assignee** before work starts. **There is no rejection state.**
@@ -170,18 +172,19 @@ bolo-backend-django/
 │   ├── wsgi.py / asgi.py
 │   └── exception_handler.py    # DRF custom exception handler -> failure_response shape
 ├── apps/
-│   ├── common/                 # response helpers, base permissions, pagination, error classes, AuditService
+│   ├── common/                 # response helpers, base permissions, pagination, error classes, audit middleware + route-config table
+│   ├── platform_admin/         # PlatformAdmin, PlatformAdminOtpCode (cross-tenant superadmin, outside RLS/tenant scoping)
 │   ├── tenants/                # Tenant, Department, TenantMembership
-│   ├── users/                  # User
+│   ├── users/                  # User (incl. last_login_at/last_logout_at/profile_pic_url)
 │   ├── auth/                   # OtpCode, JWT issuance/verification, CookieJWTAuthentication
-│   ├── tasks/                  # Task, VoiceRecording, TaskPersonalLabel
-│   ├── labels/                 # ProjectLabel (Main Labels)
+│   ├── tasks/                  # Task (dual-FK main_label/assignee_label), VoiceRecording
+│   ├── labels/                 # ProjectLabel (single pool, dual-purpose via Task's FKs)
 │   ├── evidence/                # Evidence (S3 pre-signed)
 │   ├── comments/                # Comment
 │   ├── sticky_notes/             # StickyNote
 │   ├── broadcasts/              # BroadcastNotice, BroadcastAcknowledgement
 │   ├── notifications/           # Notification, dispatch_notification service, NudgeSkipCounter
-│   └── audit/                    # AuditLog
+│   └── audit/                    # AuditLog (written only by the generic middleware, see Architecture Rules point 8)
 │       # each app:
 │       #   models.py
 │       #   serializers.py
@@ -204,7 +207,7 @@ JWT_SECRET=...
 DJANGO_SECRET_KEY=...
 REDIS_URL=redis://...                  # Celery broker
 S3_BUCKET_NAME=...
-SMTP_HOST=... / SMTP_PORT=... / SMTP_USER=... / SMTP_PASSWORD=...   # reminder/due-date emails
+SES_FROM_EMAIL=...                     # reminder/due-date emails via AWS SES (boto3, IAM-role-only — no SMTP_* vars)
 ```
 
 ---
@@ -214,14 +217,14 @@ SMTP_HOST=... / SMTP_PORT=... / SMTP_USER=... / SMTP_PASSWORD=...   # reminder/d
 - [x] `bolo-backend-django/` folder scaffolded
 - [x] `docs/` copied in from the original repo (backend-relevant subset — see `docs/README.md`)
 - [x] `CLAUDE.md`, `guidelines.md`, `README.md`, `changelog.md` written
-- [ ] `django-admin startproject` / app scaffolding
-- [ ] `requirements` files + virtualenv
-- [ ] Django settings (base/dev/prod/test) + env validation
-- [ ] Models ported from `docs/reference/schema.prisma.reference`
-- [ ] Initial migration against a fresh local Postgres DB
-- [ ] Custom `CookieJWTAuthentication` + OTP flow
-- [ ] `common` app: response helpers, exception handler, base permissions, `AuditService`
-- [ ] First vertical slice (Auth → Tasks) end-to-end against `docs/api/api-spec.md`
+- [x] `django-admin startproject` / app scaffolding (`config/` restructured, empty `apps/` package created)
+- [x] `requirements` files + virtualenv (Python 3.12.0)
+- [x] Django settings (base/dev/prod/test) + env validation (`django-environ`, fresh local `bolo_django` Postgres DB)
+- [x] Models ported from `docs/reference/schema.prisma.reference`
+- [x] Initial migration against a fresh local Postgres DB
+- [x] Custom `CookieJWTAuthentication` + OTP flow (plus access+refresh token rotation — a deliberate deviation from `docs/ops/security.md`'s original W1 decision, see `docs/ops/security.md` and `changelog.md` 2026-07-19)
+- [x] `common` app: response helpers, exception handler, base permissions, pagination (audit logging still deferred — see Architecture Rules point 8, not yet built)
+- [x] First vertical slice (Auth → Tasks) end-to-end against `docs/api/api-spec.md` — core lifecycle only (create/list/detail/edit/delete/accept/done-a/done-d/cancel/remind + minimal labels); subtasks, comments, evidence, voice recording, full label CRUD, and audit logging are Phase 3
 
 ---
 

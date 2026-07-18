@@ -1,0 +1,306 @@
+{
+  "info": {
+    "_postman_id": "b0100000-0000-4000-8000-000000000001",
+    "name": "BOLO Backend (Django) — Phase 2",
+    "description": "Covers exactly what's built so far in bolo-backend-django: Auth (OTP + JWT access/refresh), minimal Labels, and the core Task lifecycle. Does NOT cover subtasks/comments/evidence/voice-recording/full label CRUD/broadcasts -- those aren't built yet (Phase 3+).\n\nSetup, once:\n1. `source .venv/bin/activate`\n2. `python manage.py migrate --settings=config.settings.dev`\n3. `python manage.py seed_dev_data --settings=config.settings.dev` (idempotent -- creates a fixed tenant + assigner/assignee user, IDs already baked into this collection's variables)\n4. `python manage.py runserver --settings=config.settings.dev`\n\nAuth notes:\n- This API is httpOnly-cookie based, not header/Bearer-token based. Use the Postman **desktop app** (not the browser/web version) so cookies persist automatically between requests -- no manual token copying needed.\n- OTP codes aren't emailed anywhere real in dev -- they print to the `runserver` terminal (console email backend). Copy the 6-digit code from there into the `otp` collection variable before running Verify OTP.\n- Only one user can be \"logged in\" at a time in Postman's shared cookie jar (same domain = same cookies, just like a browser). To act as the other role (e.g. switch from assigner to assignee), re-run that user's Request OTP + Verify OTP pair -- it overwrites the session.\n- Task/label IDs are captured automatically into collection variables by the test scripts on Create Task / Create Label, so you don't need to copy those by hand.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "baseUrl", "value": "http://localhost:8000/api/v1" },
+    { "key": "assignerEmail", "value": "assigner@example.com" },
+    { "key": "assigneeEmail", "value": "assignee@example.com" },
+    { "key": "assigneeId", "value": "33333333-3333-3333-3333-333333333333" },
+    { "key": "otp", "value": "" },
+    { "key": "labelId", "value": "" },
+    { "key": "taskId", "value": "" }
+  ],
+  "item": [
+    {
+      "name": "Auth",
+      "item": [
+        {
+          "name": "Request OTP (Assigner)",
+          "request": {
+            "method": "POST",
+            "header": [ { "key": "Content-Type", "value": "application/json" } ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{assignerEmail}}\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": { "raw": "{{baseUrl}}/auth/request-otp/" },
+            "description": "Public route. Sends a 6-digit OTP -- in dev it prints to the runserver console (no real email sent). Copy the code into the `otp` variable, then run Verify OTP (Assigner)."
+          }
+        },
+        {
+          "name": "Verify OTP (Assigner)",
+          "request": {
+            "method": "POST",
+            "header": [ { "key": "Content-Type", "value": "application/json" } ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{assignerEmail}}\",\n  \"otp\": \"{{otp}}\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": { "raw": "{{baseUrl}}/auth/verify-otp/" },
+            "description": "Public route. On success sets two httpOnly cookies (token = 15-min access JWT, refresh_token = 7-day rotating refresh token) -- Postman stores these automatically and sends them on every subsequent request to this host. This logs you in AS THE ASSIGNER for all following requests until you verify-otp as someone else."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code === 200) {",
+                  "    pm.test('logged in', function () {",
+                  "        pm.expect(pm.response.json().success).to.eql(true);",
+                  "    });",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Request OTP (Assignee)",
+          "request": {
+            "method": "POST",
+            "header": [ { "key": "Content-Type", "value": "application/json" } ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{assigneeEmail}}\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": { "raw": "{{baseUrl}}/auth/request-otp/" },
+            "description": "Same as above, but for the assignee user. Use this + Verify OTP (Assignee) whenever you need to act as the assignee (accept, done-a)."
+          }
+        },
+        {
+          "name": "Verify OTP (Assignee)",
+          "request": {
+            "method": "POST",
+            "header": [ { "key": "Content-Type", "value": "application/json" } ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{assigneeEmail}}\",\n  \"otp\": \"{{otp}}\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": { "raw": "{{baseUrl}}/auth/verify-otp/" },
+            "description": "Logs you in AS THE ASSIGNEE, overwriting the assigner's session cookie (only one active session per browser/Postman cookie jar, same as production)."
+          }
+        },
+        {
+          "name": "Refresh Token",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": { "mode": "raw", "raw": "" },
+            "url": { "raw": "{{baseUrl}}/auth/refresh/" },
+            "description": "Uses the refresh_token cookie (not the access token) to mint a new access+refresh pair. Rotates the refresh token -- the old one becomes unusable immediately (replaying it, or any already-used refresh token, returns 401 and revokes every refresh token for that user)."
+          }
+        },
+        {
+          "name": "Logout",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": { "mode": "raw", "raw": "" },
+            "url": { "raw": "{{baseUrl}}/auth/logout/" },
+            "description": "Requires an authenticated session (access token cookie). Clears both cookies server-side and revokes the current refresh token."
+          }
+        }
+      ]
+    },
+    {
+      "name": "Labels",
+      "item": [
+        {
+          "name": "Create Label",
+          "request": {
+            "method": "POST",
+            "header": [ { "key": "Content-Type", "value": "application/json" } ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"NAAC\",\n  \"colorCode\": \"#6B7280\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": { "raw": "{{baseUrl}}/labels/" },
+            "description": "Requires login (any user). Label names are unique per creator, not per tenant -- creating the same name twice as the same user returns 409 CONFLICT."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code === 201) {",
+                  "    pm.collectionVariables.set('labelId', pm.response.json().data.id);",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "List My Labels",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{baseUrl}}/labels/mine/" },
+            "description": "Returns only labels created by the currently logged-in user."
+          }
+        },
+        {
+          "name": "List Shared Labels",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{baseUrl}}/labels/shared/" },
+            "description": "Same underlying query as /labels/mine/ -- both surface the caller's own labels, just for different UI pickers (main-label vs personal-label)."
+          }
+        }
+      ]
+    },
+    {
+      "name": "Tasks",
+      "item": [
+        {
+          "name": "Create Task",
+          "request": {
+            "method": "POST",
+            "header": [ { "key": "Content-Type", "value": "application/json" } ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"title\": \"Submit NAAC report\",\n  \"assigneeId\": \"{{assigneeId}}\",\n  \"dueDate\": \"2026-08-15T00:00:00Z\",\n  \"priority\": \"P2\",\n  \"mainLabelId\": \"{{labelId}}\",\n  \"description\": \"Include sections A1-C4.\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": { "raw": "{{baseUrl}}/tasks/" },
+            "description": "Run as the assigner. mainLabelId is optional -- remove it (or leave {{labelId}} empty) if you haven't created a label yet. Omit dueDate entirely to create a DRAFT task instead of OPEN (no notification fires for a DRAFT)."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code === 201) {",
+                  "    pm.collectionVariables.set('taskId', pm.response.json().data.id);",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "List Tasks (view=delegated)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{baseUrl}}/tasks/?view=delegated&page=1&limit=20" },
+            "description": "Run as the assigner. `view` is required: assigned | delegated | needs_attention. Optional: labelId, isArchived, page, limit."
+          }
+        },
+        {
+          "name": "List Tasks (view=assigned)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{baseUrl}}/tasks/?view=assigned&page=1&limit=20" },
+            "description": "Run as the assignee to see this task in their inbox."
+          }
+        },
+        {
+          "name": "Task Counts",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{baseUrl}}/tasks/counts/" },
+            "description": "Dashboard tab counts for whichever user is currently logged in: {assigned, delegated, needsAttention}."
+          }
+        },
+        {
+          "name": "Get Task Detail",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{baseUrl}}/tasks/{{taskId}}/" },
+            "description": "Caller must be the assigner or assignee of this task (403 otherwise, 404 if it doesn't exist in your tenant). subtasks/comments/evidence/voiceRecording will always be empty -- those features aren't built yet."
+          }
+        },
+        {
+          "name": "Update Task (PATCH)",
+          "request": {
+            "method": "PATCH",
+            "header": [ { "key": "Content-Type", "value": "application/json" } ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"priority\": \"P1\",\n  \"description\": \"Updated scope.\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": { "raw": "{{baseUrl}}/tasks/{{taskId}}/" },
+            "description": "Assigner-only. All fields optional: assigneeId, dueDate, priority, mainLabelId, description. Sending \"title\" here returns 400 TITLE_IMMUTABLE -- title can never be changed after creation. Setting dueDate to null on an OPEN task reverts it to DRAFT."
+          }
+        },
+        {
+          "name": "Accept Task",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": { "mode": "raw", "raw": "" },
+            "url": { "raw": "{{baseUrl}}/tasks/{{taskId}}/accept/" },
+            "description": "Assignee-only. Requires the task to currently be OPEN -- switch to the assignee's session first (Verify OTP (Assignee))."
+          }
+        },
+        {
+          "name": "Mark Done (Assignee) -- done-a",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": { "mode": "raw", "raw": "" },
+            "url": { "raw": "{{baseUrl}}/tasks/{{taskId}}/done-a/" },
+            "description": "Assignee-only. Requires IN_PROGRESS (i.e. already accepted). Marks the assignee's side of the two-step completion."
+          }
+        },
+        {
+          "name": "Mark Done & Archive (Assigner) -- done-d",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": { "mode": "raw", "raw": "" },
+            "url": { "raw": "{{baseUrl}}/tasks/{{taskId}}/done-d/" },
+            "description": "Assigner-only. Requires DONE_A (or IN_PROGRESS/OVERDUE) and all subtasks DONE_D (vacuously true -- subtasks aren't built yet). Archives the task -- this is terminal, it can no longer be edited, cancelled, or deleted (409 TASK_TERMINAL)."
+          }
+        },
+        {
+          "name": "Cancel Task",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": { "mode": "raw", "raw": "" },
+            "url": { "raw": "{{baseUrl}}/tasks/{{taskId}}/cancel/" },
+            "description": "Assigner-only. Works on any non-DONE_D task. Try this on a fresh task (create one first) rather than one you've already run through done-d."
+          }
+        },
+        {
+          "name": "Remind Task",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": { "mode": "raw", "raw": "" },
+            "url": { "raw": "{{baseUrl}}/tasks/{{taskId}}/remind/" },
+            "description": "Assigner-only. Requires OPEN/IN_PROGRESS/OVERDUE. Fires an in-app Notification AND an email (printed to the runserver console via the dev email backend)."
+          }
+        },
+        {
+          "name": "Delete Task",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": { "raw": "{{baseUrl}}/tasks/{{taskId}}/" },
+            "description": "Assigner-only. Hard delete. Returns 409 TASK_TERMINAL if the task is already DONE_D -- test this on a fresh (non-archived) task."
+          }
+        }
+      ]
+    }
+  ]
+}

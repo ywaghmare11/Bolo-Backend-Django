@@ -13,7 +13,7 @@
 Tenant                            ← a college, a CA/CS firm, etc.
  ├── Users[] (with TenantMembership — role + dept + reporting chain)
  ├── Departments[]
- ├── ProjectLabels[]               ← Main Labels (Tier 1 — shared)
+ ├── ProjectLabels[]               ← Label pool (each user sees only their own; dual FK on Task for main + personal)
  ├── Tasks[]
  ├── BroadcastNotices[]
  ├── Notifications[]
@@ -66,6 +66,8 @@ Tenant isolation: **Row-Level Security on `tenant_id`** — every query scoped t
 | phone | string | — | Collected during Excel onboarding; future notification channels |
 | profilePicUrl | string | — | S3 object key (not a URL) — pre-signed GET URL generated per request, same pattern as `Evidence.fileUrl`; optional, add/update/delete via `POST /upload/profile-picture-presign` → `PATCH /me/profile-picture` → `DELETE /me/profile-picture` |
 | preferredLang | enum | ✅ | `EN` \| `HI`; default `EN` |
+| lastLoginAt | timestamp | — | Added 2026-07-14 (W99) — set on successful OTP verify. Session-tracking field that doubles as the DB mutation the generic `AuditLog` middleware keys `USER_LOGIN` off of — see §2.6 in `system-design.md`. |
+| lastLogoutAt | timestamp | — | Added 2026-07-14 (W99) — set on logout. Same purpose as `lastLoginAt`, and gives `logout` its first real service/repository layer (was controller-only, no DB call, before this). |
 | createdAt | timestamp | ✅ | |
 | updatedAt | timestamp | ✅ | |
 
@@ -126,14 +128,14 @@ Tenant isolation: **Row-Level Security on `tenant_id`** — every query scoped t
 |---|---|---|---|
 | id | UUID | ✅ | |
 | tenantId | UUID | ✅ | FK → Tenant |
-| name | string | ✅ | `@@unique([tenantId, name])` — no duplicate names within a tenant |
-| colorCode | string | ✅ | 6-digit hex (`#RRGGBB`); default `#6B7280` if not provided at create |
-| description | string | — | Optional free text; default `null` |
+| name | string | ✅ | `@@unique([createdBy, name])` — no duplicate label names per user |
+| colorCode | string | ✅ | Hex color; default `#6B7280` — added 2026-07-02 |
+| description | string | — | Optional label description — added 2026-07-02 |
 | createdBy | UUID | ✅ | FK → User |
 | createdAt | timestamp | ✅ | |
 | updatedAt | timestamp | ✅ | |
 
-> Set by the task assigner; visible to all users with task access. Personal labels (Tier 2) live in `TaskPersonalLabel`.
+> Serves dual purpose via two FKs on Task: `mainLabelId` (assigner sets; visible to all who can see the task) and `assigneeLabelId` (assignee sets; private — API never returns this to non-assignees). Each user sees only labels they created (`createdBy = req.userId`). `onDelete: Restrict` — cannot delete a label while it is applied to any task.
 
 ---
 
@@ -151,7 +153,8 @@ Tenant isolation: **Row-Level Security on `tenant_id`** — every query scoped t
 | priority | enum | — | `P1` \| `P2` \| `P3` \| `P4`; **default `P3`** (PRD v1.1) |
 | dueDate | timestamp | — | Optional while Draft. **Required at Draft → Open transition** (W-C3 resolved) |
 | description | text | — | |
-| projectLabelId | UUID | — | FK → ProjectLabel (Main Label — assigner sets; everyone sees) |
+| mainLabelId | UUID | — | FK → ProjectLabel (Main Label — assigner sets; visible to all) |
+| assigneeLabelId | UUID | — | FK → ProjectLabel (Assignee personal label — assignee sets; private; cleared on reassignment) |
 | isArchived | boolean | ✅ | `true` when assigner marks DONE_D on a main task; default `false` |
 | acceptedAt | timestamp | — | When assignee accepted |
 | parentTaskId | UUID | — | FK → Task (self-reference). When set, this Task **is** a subtask |
@@ -160,7 +163,8 @@ Tenant isolation: **Row-Level Security on `tenant_id`** — every query scoped t
 
 **Ownership rules:**
 - `title` — immutable after creation
-- `dueDate`, `assigneeId`, `priority`, `projectLabelId`, `description` — editable by assigner only
+- `dueDate`, `assigneeId`, `priority`, `mainLabelId`, `description` — editable by assigner only
+- `assigneeLabelId` — editable by assignee only; service clears this field when `assigneeId` changes
 - `status` — assigner controls (except `DONE_A` which assignee sets)
 - Subtask creation — assignee only
 - Delete — assigner only
@@ -185,23 +189,6 @@ A subtask is a **`Task` row with `parentTaskId` set** — shares every field, re
 - Subtask `dueDate` must be earlier than parent's `dueDate` — service validates
 - Cannot be assigned back to the parent task's assigner
 - Nesting is unbounded — self-reference handles arbitrary depth
-
----
-
-### TaskPersonalLabel *(Personal Labels — Tier 2)*
-
-| Field | Type | Required | Notes |
-|---|---|---|---|
-| id | UUID | ✅ | |
-| taskId | UUID | ✅ | FK → Task |
-| userId | UUID | ✅ | FK → User (the person who added this label) |
-| label | string | ✅ | Free text; `@@unique([taskId, userId, label])` |
-| colorCode | string | ✅ | 6-digit hex (`#RRGGBB`); default `#6B7280` if not provided at create |
-| description | string | — | Optional free text; default `null` |
-| createdAt | timestamp | ✅ | |
-
-> Private to the user who added it — never visible to others. Both assigner and assignee can add personal labels. Autocomplete via `SELECT DISTINCT label WHERE userId`.
-> ⚠️ `colorCode` and `description` are decided but **not yet in `schema.prisma`** — migration needed on `feature/project-label` branch.
 
 ---
 
@@ -311,7 +298,7 @@ A subtask is a **`Task` row with `parentTaskId` set** — shares every field, re
 
 | Field | Type | Required | Notes |
 |---|---|---|---|
-| broadcastId | UUID | ✅ | PK (composite with userId); FK → BroadcastNotice |
+| broadcastId | UUID | ✅ | PK (composite with userId); FK → BroadcastNotice, **`ON DELETE CASCADE`** (corrected 2026-07-13 — was RESTRICT, which 500'd `DELETE /broadcast-notices/:id` for any broadcast with acknowledgements; found via manual API testing) |
 | userId | UUID | ✅ | PK (composite with broadcastId); FK → User |
 | acknowledgedAt | timestamp | ✅ | |
 
@@ -347,10 +334,10 @@ A subtask is a **`Task` row with `parentTaskId` set** — shares every field, re
 |---|---|---|---|
 | id | UUID | ✅ | |
 | tenantId | UUID | ✅ | FK → Tenant |
-| actorId | UUID | — | FK → User; null for system-triggered actions |
-| actorType | enum | ✅ | `USER` \| `SYSTEM`; default `USER` |
+| actorId | UUID | — | FK → User; null for system-triggered actions **and for `PLATFORM_ADMIN` actions** (added 2026-07-17) — `PlatformAdmin` is a separate model, not a `User` row, so there's no valid FK target |
+| actorType | enum | ✅ | `USER` \| `SYSTEM` \| `PLATFORM_ADMIN`; default `USER` |
 | action | enum | ✅ | See AuditAction enum below |
-| entityType | string | ✅ | `"task"` \| `"broadcast"` \| `"user"` \| `"document"` |
+| entityType | string | ✅ | `"TASK"` \| `"BROADCAST"` \| `"USER"` \| `"DOCUMENT"` \| `"TENANT"` (added 2026-07-17, platform-admin actions) — **UPPERCASE**, matching `api-spec.md` §12. Deliberately diverges from `Notification.entityType` (lowercase) — AuditLog is a distinct polymorphic-reference convention, not required to match Notification's. |
 | entityId | string | ✅ | ID of the affected entity |
 | before | JSON | — | State before the change — null for creates |
 | after | JSON | — | State after the change — null for deletes |
@@ -358,13 +345,16 @@ A subtask is a **`Task` row with `parentTaskId` set** — shares every field, re
 | createdAt | timestamp | ✅ | |
 
 > **Immutable** — never updated or deleted. CA/CS vertical requires longer retention for compliance (exact period TBD before first CA/CS onboarding). W63 resolved — audit log is in scope for V1.
+> **W95 resolved (2026-07-14):** `entityType` casing contradiction between this file (was lowercase) and `api-spec.md` §12 (UPPERCASE) — UPPERCASE is canonical for `AuditLog`. Writers must uppercase the entity name at the call site.
+> **W98 resolved (2026-07-14):** rows are written by a **generic Express middleware + static route-config table**, not by explicit `dispatchAuditLog()` calls scattered across services (deliberately the opposite of the `Notification` dispatcher pattern in §2.5 of `system-design.md`) — see `system-design.md` §2.6 for the full design and the one documented exception (login/logout, W99).
 
 **AuditAction enum covers:**
 - Task & Subtask: `TASK_CREATED`, `TASK_UPDATED`, `TASK_DELETED`, `TASK_ASSIGNED`, `TASK_REASSIGNED`, `TASK_STATUS_CHANGED`, `TASK_PRIORITY_CHANGED`, `TASK_DUE_DATE_CHANGED`, `TASK_LABEL_CHANGED`, `TASK_ARCHIVED`, `SUBTASK_CREATED`, `SUBTASK_UPDATED`, `SUBTASK_DELETED`
-- Documents: `DOCUMENT_UPLOADED`, `DOCUMENT_DELETED`, `DOCUMENT_DOWNLOADED`, `DOCUMENT_ACCESSED`
+- Documents: `DOCUMENT_UPLOADED`, `DOCUMENT_DELETED` (wired 2026-07-18 — Evidence upload/delete, PR #36, `entityType: 'DOCUMENT'`); `DOCUMENT_DOWNLOADED`, `DOCUMENT_ACCESSED` unused — no config rows, would require auditing `GET` requests, which the middleware doesn't support (only POST/PATCH/DELETE)
 - Broadcast: `BROADCAST_CREATED`, `BROADCAST_UPDATED`, `BROADCAST_DELETED`, `BROADCAST_PUBLISHED`, `BROADCAST_ACKNOWLEDGED`, `BROADCAST_VIEWED`
 - Audience Scope: `AUDIENCE_SCOPE_CREATED`, `AUDIENCE_SCOPE_MODIFIED`, `AUDIENCE_SCOPE_ASSIGNMENT_CHANGED`
-- User Activity: `USER_LOGIN`, `USER_LOGOUT`, `USER_PROFILE_UPDATED`, `USER_ROLE_CHANGED`, `USER_PERMISSION_CHANGED`
+- User Activity: `USER_LOGIN`, `USER_LOGOUT`, `USER_PROFILE_UPDATED` (wired 2026-07-18 for `PATCH`/`DELETE /me/profile-picture`; `PATCH /me` name/language edits not yet wired), `USER_ROLE_CHANGED`, `USER_PERMISSION_CHANGED`
+- Platform Admin (added 2026-07-17, cross-tenant/superadmin — `system-design.md` §2.6): `TENANT_CREATED`, `MEMBER_ADDED`, `MEMBER_REMOVED`, `MEMBERS_BULK_IMPORTED`
 
 ---
 
@@ -387,8 +377,9 @@ A subtask is a **`Task` row with `parentTaskId` set** — shares every field, re
 | 8 | `TASK_DUE_TODAY` / `TASK_DUE_TOMORROW` / `TASK_OVERDUE` | Due date proximity — **one-shot**, fires once per threshold crossing | Assignee + Assigner |
 | — | (`TASK_DUE_TOMORROW` window — resolved 2026-07-04, W82) | A task due tomorrow does **not** get row 8d's recurring `AI_NUDGE_DUE_PROXIMITY` treatment — no third skip-cap bucket needed. It's covered by the ordinary Periodic/Follow-up nudges like any other open task. Only once it actually becomes Due Today (or Overdue) does it "land in" row 8d's recurring/skip-cap/escalation mechanic. Only 2 cap buckets exist: due-today, overdue. | — |
 | 8b | ~~`AI_NUDGE_PERIODIC`~~ | **Removed 2026-07-06.** Was a batched "you have N open tasks" summary. Once Follow-up gained per-task action buttons (below) and lost its skip-cap, there was no remaining structural difference between the two — Follow-up's named conditions already comprehensively cover the space Periodic vaguely summarized. Merged away entirely; do not reintroduce. | — |
-| 8c | `AI_NUDGE_FOLLOWUP` | AI Nudge — Follow-up. **Redesigned 2026-07-06, built 2026-07-10 — 5 conditions on Task/Subtask, own action button each, no cap/escalation on any of them:** (a) not yet accepted → assignee, `Accept Task`; (b) accepted, no progress since → assignee, `Add Comment`; (c) comment posted, no reply from the other party → whoever didn't reply, `Add Comment`; (d) assignee marked `DONE_A`, assigner hasn't confirmed `DONE_D` → assigner, `Mark Complete`; (e) all subtasks `DONE_D` but parent still open → assigner, `Mark Complete`. All 5 also get a lifetime skip counter tracked in `NudgeSkipCounter` (below) **for visibility only** — no cap enforced, no escalation (assigner-facing (d)/(e) explicitly have no org-hierarchy escalation either — nothing above the assigner in this model). Broadcast is **not** a Follow-up condition — it's due-proximity only (see 8d). Fires every 6h, no office-hours gate. One condition fires per task per sweep tick (first match wins, priority order a→e) even if a task technically matches more than one. | Per-condition, see above |
-| 8d | `AI_NUDGE_DUE_PROXIMITY` | AI Nudge — Due Date Proximity. **Polymorphic across Task/Subtask, StickyNote, and Broadcast (redesigned 2026-07-06, built 2026-07-10 — Broadcast added).** The only type with a real skip cap + escalation. Fires every 3h, no office-hours gate. Per-entity behavior: <br>**Task/Subtask** (already-accepted only — an unaccepted-but-overdue task is Follow-up condition (a)'s territory, not this one's; `IN_PROGRESS`/`OVERDUE` or due-today only): `Add Comment` + `Skip` + `Open`. **Skip is a user-clicked button** (`POST /nudges/:id/skip`) — it does not auto-increment on sweep fire; the counter only moves when the user actually clicks it. Cap: 3 for due-today, 1 for overdue (overdue stricter — more urgent; in practice this means overdue tasks start at last-chance immediately, zero grace skips). **Last-chance state** (`skipCount >= skipCap - 1`): `Skip` button disappears, replaced by a warning ("will be escalated to your assigner if not actioned") — only `Add Comment`/`Open` remain. Any comment left counts as resolving it (no separate "remind me later" — Add Comment already serves that purpose). **Escalation**: sweep-side check, independent of whether the routine nudge itself re-fires that tick — if `skipCount >= cap` and not yet escalated and the task still hasn't reached at least `DONE_A` → one-time in-app+email to the **assigner**, never repeats (`NudgeSkipCounter.escalatedAt` guard). If the task reached `DONE_A` in the meantime, it naturally drops out of the sweep query (not `OPEN`/`IN_PROGRESS`/`OVERDUE` anymore) — no escalation. **The assignee is only ever held to `DONE_A`, never `DONE_D` — that's the assigner's responsibility, not something the assignee can be threatened over.** <br>**StickyNote**: `Skip` only, no cap, no escalation — self-limits once the due date's calendar day ends. <br>**Broadcast**: `Skip`/acknowledge, **cap = 3, enforcement only — no escalation** (no sender-escalation target; exceeding the cap just removes Skip, forcing acknowledgment, nothing further happens). One row per (broadcast, un-acknowledged audience member) — dedup and skip counters are per-recipient, not per-broadcast, since one broadcast has many recipients. Self-limits at the broadcast's normal 1-day expiry regardless. | Task/Subtask: assignee (routine) + assigner (one-time escalation only). StickyNote: owner only. Broadcast: each un-acknowledged audience member, no escalation. |
+| 8c | `AI_NUDGE_FOLLOWUP` | AI Nudge — Follow-up. **Scope narrowed 2026-07-13 (client-directed):** down to 2 conditions, both assignee-only — (b) accepted, no progress since → assignee, `Add Comment`; (c) comment posted and the **assignee** owes the reply (assigner posted last) → assignee, `Add Comment`. Conditions (a) not-yet-accepted/`Accept Task`, (d) `DONE_A`-awaiting-`DONE_D`/`Mark Complete`, (e) subtasks-done/`Mark Complete` are **removed entirely, not just their buttons** — those are irreversible actions the user should take deliberately from the task itself, not one-click from a nudge, and they're already covered by the general Notification panel. The **assigner is out of scope for Follow-up entirely** — if the assignee posted the last comment and is waiting on the assigner, no nudge fires (there's no one left in scope to notify). No Subtask/Broadcast/StickyNote — Task only, and Subtask is no longer distinguished from Task (`entityType` is always `"task"`; a subtask is just another task from the assignee's point of view). Skip counter tracked for visibility only, no cap, no escalation. Fires every 6h, no office-hours gate. | Assignee only |
+| 8d | `AI_NUDGE_DUE_PROXIMITY` | AI Nudge — Due Date Proximity. **Scope narrowed 2026-07-13: Task only** (Subtask/StickyNote/Broadcast all dropped). Fires every 3h, no office-hours gate. Already-accepted only (`IN_PROGRESS`/`OVERDUE` or due-today) — an unaccepted-but-overdue task gets no nudge at all now (Follow-up's "not accepted" condition was removed, not replaced). Actions: `Add Comment` + `Open Task` + `Skip`. **Skip is a user-clicked button**, never auto-incremented by the sweep. **Add Comment resolves the nudge for this cycle** (fixed 2026-07-13 — was previously a no-op for Due-Proximity specifically, since its eligibility check never looked at comments; the fix re-validates against comments posted after the notification fired, whether via the nudge panel or the task directly). Cap: 3 for due-today, 1 for overdue. **No blocking behavior (removed 2026-07-13):** Skip is **never** disabled or hidden at cap, and the panel is never forced closed/blocked — at cap the card just shows a plain warning ("skip this and it'll be escalated to your assigner"); the user can keep skipping past it if they choose. **Escalation is still real**, independent of the UI: sweep-side check each tick — if `skipCount >= cap`, not yet escalated, and the task hasn't reached at least `DONE_A` → one-time in-app+email to the **assigner**, guarded by `NudgeSkipCounter.escalatedAt` so it never repeats. Reaching `DONE_A` drops the task out of the sweep query entirely (no longer `OPEN`/`IN_PROGRESS`/`OVERDUE`) — no escalation. **The assignee is only ever held to `DONE_A`, never `DONE_D`.** | Assignee (routine) + assigner (one-time escalation only) |
+| — | **Feed composition (added 2026-07-13):** `GET /nudges` returns **max 5 items total**, not everything eligible. Due-Proximity fills first (ordered by `Task.priority`, P1 highest), up to 5. If fewer than 5 Due-Proximity items exist, Follow-up fills the remaining slots — also ordered by `Task.priority` first, then by `NudgeSkipCounter.lastShownAt` ascending (oldest-shown-first, nulls/never-shown first) as the rotation tiebreaker within the same priority. `lastShownAt` is updated on every Follow-up item that actually appears in a response — this is what makes the rotation self-correcting: as the user resolves what's currently shown, the next-oldest-unshown candidate surfaces on the next fetch, rather than the same few items camping the feed forever. | — |
 | 10 | `SUBTASK_DONE_A` | Subtask Marked DoneA | Sub-task assigner |
 | 11 | `SUBTASK_DONE_D` | Subtask Marked DoneD | Sub-task assignee |
 | 12 | `BROADCAST_POSTED` | Broadcast Posted | All tenant members in audience scope |
@@ -406,30 +397,28 @@ A subtask is a **`Task` row with `parentTaskId` set** — shares every field, re
 
 **Skip counters — universal but not universally enforced (2026-07-06):** every Follow-up condition (a–e) and every Due-Proximity entity (Task/StickyNote/Broadcast) gets a lifetime skip counter persisted in DB. Only **Task due-proximity** (cap 3/1, escalates) and **Broadcast due-proximity** (cap 3, enforcement only) actually enforce a cap. Follow-up's 5 conditions and StickyNote due-proximity track the counter for visibility/analytics only — no cap, no consequence.
 
-**Schema — built 2026-07-10 (W94 resolved):** `Task.dueProximitySkipCount`/`dueProximityEscalatedAt` are gone (dropped in migration `20260709182552_nudge_skip_counter_and_periodic_retirement`), replaced by a generic polymorphic `NudgeSkipCounter` table. Built shape differs from the original proposal in two ways, both confirmed before implementing: added `tenantId` (every tenant-scoped table needs it for RLS — the original proposal omitted it) and added `userId` (**a correctness fix, not just style** — Broadcast has many recipients per entity, so an entity-only key would make every recipient of the same broadcast share one skip count; one person skipping would push it to last-chance for everyone):
+**Schema — built 2026-07-10 (W94 resolved), simplified again 2026-07-13:** `Task.dueProximitySkipCount`/`dueProximityEscalatedAt` are gone (dropped in migration `20260709182552_nudge_skip_counter_and_periodic_retirement`), replaced by a generic `NudgeSkipCounter` table. The 2026-07-10 build added `userId` to the key as a correctness fix for Broadcast's many-recipients-per-entity problem — now that Broadcast (and StickyNote, and the Task/Subtask distinction) are out of scope entirely, every remaining candidate has exactly one assignee, so `userId` was **dropped again** (migration `20260712200810_nudge_scope_task_only`) back to simple per-task keying. That same migration added `lastShownAt`, which didn't exist before — it drives the Follow-up rotation (see row 8c/8d above), and is distinct from "when did this last fire" (`createdAt`/the sweep's own re-fire interval) — it specifically means "when did this last actually appear in a `GET /nudges` response," which can lag behind eligibility if the feed's 5-slot cap keeps bumping a candidate out:
 ```prisma
 model NudgeSkipCounter {
   id          String    @id
   tenantId    String
-  userId      String
-  entityType  String    // "task" | "subtask" | "sticky_note" | "broadcast"
+  entityType  String    // "task" — scope narrowed 2026-07-13
   entityId    String
-  nudgeKind   String    // "followup_not_accepted" | "followup_no_progress" | "followup_unanswered_comment" |
-                         // "followup_done_a_pending" | "followup_subtasks_done_pending" | "due_proximity"
+  nudgeKind   String    // "followup_no_progress" | "followup_unanswered_comment" | "due_proximity"
   skipCount   Int       @default(0)
-  escalatedAt DateTime? // only ever set for Task/Subtask due-proximity
+  escalatedAt DateTime? // due-proximity only, one-time escalation-to-assigner guard
+  lastShownAt DateTime? // Follow-up rotation — last time shown in a GET /nudges response
   createdAt   DateTime  @default(now())
   updatedAt   DateTime  @updatedAt
 
   tenant Tenant @relation(fields: [tenantId], references: [id])
-  user   User   @relation(fields: [userId], references: [id])
 
-  @@unique([userId, entityType, entityId, nudgeKind])
+  @@unique([entityType, entityId, nudgeKind])
   @@index([tenantId])
   @@map("nudge_skip_counters")
 }
 ```
-`AI_NUDGE_PERIODIC` was removed from the `NotificationType` enum in the same migration (6 stale test rows using it were deleted first, with sign-off, so the enum-narrowing cast wouldn't fail — no other notification types or rows were touched; verified 95→95 unrelated rows intact before/after).
+`AI_NUDGE_PERIODIC` was removed from the `NotificationType` enum on 2026-07-10 (6 stale test rows using it were deleted first, with sign-off, so the enum-narrowing cast wouldn't fail — no other notification types or rows were touched; verified 95→95 unrelated rows intact before/after).
 
 **Backend API — built 2026-07-10:** `GET /api/v1/nudges`, `POST /api/v1/nudges/:id/skip`, `POST /api/v1/nudges/skip-all` — see `docs/api/api-spec.md` §11 for request/response shapes. The feed endpoint re-validates every row against current entity state on every call (never trusts what was true when the notification fired) and auto-resolves (marks read) anything whose condition no longer holds.
 

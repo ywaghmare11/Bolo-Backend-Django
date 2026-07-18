@@ -83,13 +83,13 @@ Roles are defined **per task, not org-wide**. The same user can hold different r
 
 > ⚠️ **This supersedes D35 (2026-06-17 decision).** D35 established a fully-private Gmail-style model where every user's label was invisible to everyone else. The formal PRD update (2026-06-18) introduces a two-tier model: one shared Main Label plus private Personal Labels.
 
-**Tier 1 — Main Label (shared)**
+**Main Label — Main Label (shared)**
 - Set by the **task assigner (Delegator)** only.
 - Visible to **all users with access to the task** (assigner, assignee, and any org members who can view the task).
 - Used for task organisation at the org/project level (e.g. "NAAC – Section 3", "GST Filing – Q2").
 - One main label per task; can be updated by the assigner.
 
-**Tier 2 — Personal Labels (private)**
+**Assignee Personal Label — Personal Labels (private)**
 - Each user (assigner or assignee) can maintain their **own private labels** on any task, independently of the Main Label.
 - **Visible only to the user who created them** — never visible to anyone else.
 - Used exclusively for **individual task segregation and filtering** (e.g. "Follow up", "Waiting on client").
@@ -370,7 +370,7 @@ Every voice-initiated task creation produces a `VoiceRecording` record. This is 
 
 ## 10. Notifications
 
-All notifications are delivered **in-app**, via polling (no WebSocket/SSE — client polls on a configurable interval). **Reminder/due-date types** (`TASK_REMINDER`, `TASK_DUE_TODAY`, `TASK_DUE_TOMORROW`, `TASK_OVERDUE`) **also send email** via the existing nodemailer/SMTP setup (2026-07-03, corrected — was previously documented as in-app only). All other types remain in-app only. WhatsApp is out of scope for all types.
+All notifications are delivered **in-app**, via polling (no WebSocket/SSE — client polls on a configurable interval). **Reminder/due-date types** (`TASK_REMINDER`, `TASK_DUE_TODAY`, `TASK_DUE_TOMORROW`, `TASK_OVERDUE`) **also send email** via AWS SES (2026-07-03, corrected — was previously documented as in-app only; SES transport decided 2026-07-18, was nodemailer/SMTP). All other types remain in-app only. WhatsApp is out of scope for all types.
 
 | # | Event | Trigger | Who is Notified | Notes |
 |---|---|---|---|---|

@@ -1,0 +1,9 @@
+-r base.txt
+
+# pytest pinned below 9.x -- pytest-django 4.12.0 (latest available) breaks on
+# pytest 9's fixture-finalizer internals (AssertionError in _pytest/fixtures.py
+# on every @pytest.mark.django_db test, even with zero custom fixtures).
+pytest==8.4.2
+pytest-django==4.12.0
+factory_boy==3.3.3
+ruff==0.15.21

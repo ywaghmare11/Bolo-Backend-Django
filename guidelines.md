@@ -2,7 +2,7 @@
 
 > **How code must be written in this repo.** Read alongside `CLAUDE.md`.
 > This is a Python/Django port of the original Node/Express/Prisma `bolo-backend` guidelines. Principles are unchanged; syntax and tooling are translated.
-> **Last updated:** 2026-07-14 — initial scaffold.
+> **Last updated:** 2026-07-18 — Audit Logging section rewritten to match the original's generic middleware + route-config pattern (was manual `AuditService.log()` calls); `on_delete` exceptions updated to include `BroadcastAcknowledgement.broadcast`. Previously: initial scaffold (2026-07-14).
 
 ---
 
@@ -15,7 +15,7 @@ Every change — standards update, new pattern, significant refactor — must be
 ## Core rules (non-negotiable)
 
 1. **Every query is tenant-scoped.** Tenant-owned tables carry `tenant_id`; repository queries always filter `tenant_id=...`. Child rows (StickyNote, Comment, Evidence, TaskPersonalLabel) are scoped via their owner/parent. `tenant_id` always comes from the decoded JWT (`request.tenant_id`), never the request body or query params.
-2. **Audit log is required.** `AuditService.log()` is called from the service layer only — never the view, never the repository — for every action in the audit event list (see `AuditLog` section below). `AuditLog` rows are immutable — no update/delete.
+2. **Audit log is required, and it is generic, not dispatched.** No service, view, or repository ever calls an audit-log function directly — see the "Audit Logging" section below for the middleware + route-config pattern (matches the original's 2026-07-14 W98/W99 redesign). `AuditLog` rows are immutable — no update/delete.
 3. **PII encryption: not required yet** (matches original W62/DPDP decision). No GPS fields — this is web-only. Don't add encryption complexity speculatively.
 4. **Validate at system boundaries.** Trust internal code; validate serializer input and external API responses. No defensive checks inside services/repositories.
 5. **View → Service → Repository — strictly enforced.** No Django ORM in views. No `request`/`response` objects in services. No business logic in repositories.
@@ -189,28 +189,21 @@ Use `structlog` (structured logging) — never bare `print()` in application cod
 
 ## Audit Logging
 
-`AuditService.log()` is called from the **service layer only**. Writes an immutable row to `audit_logs`.
+**Generic middleware + static route-config table — not manual per-service calls.** This is deliberately the *opposite* pattern from Notifications (`dispatch_notification()`, called explicitly at every relevant call site) — matches the original's 2026-07-14 redesign (W98/W99). Rationale carried over unchanged: a `Notification` needs hand-written, context-specific `message`/`actor_name`/`entity_title` content only the business service has on hand; an `AuditLog` row needs none of that — it's a mechanical `{who, what route, before-state, after-state}` capture fully derivable from the HTTP request/response and a DB read, which is exactly what a generic layer is good at.
 
-```python
-@dataclass
-class AuditPayload:
-    actor_id: str | None       # None for SYSTEM actions
-    actor_type: Literal["USER", "SYSTEM"]
-    action: str                 # AuditAction enum value
-    entity_type: str
-    entity_id: str
-    tenant_id: str
-    before: dict | None = None
-    after: dict | None = None
-    metadata: dict | None = None  # {"ip": ..., "user_agent": ...}
+**Mechanics (Django/DRF equivalent of the original's Express middleware + config table):**
 
-class AuditService:
-    def log(self, payload: AuditPayload) -> None: ...
-```
+1. **Route config table** (`apps/common/audit_route_config.py`, one static dict) — one entry per `{method, resolver_match.view_name}` → `{entity_type (UPPERCASE), model, action | resolve_action(before, after)}`. A route not in this table is never audited — adding a new mutating endpoint means adding one config row, not editing a view. `resolver_match.view_name` is the Django-idiomatic substitute for the original's raw route-string matching.
+2. **Before-state**: for update/delete-shaped routes, the middleware does a generic `model.objects.get(pk=...)` before calling `get_response(request)`. Naturally `None` for create routes (`before` stays null, matching the schema's existing convention).
+3. **After-state**: the middleware inspects the response body's `data` field (every view already responds via `success_response()` → `{success, message, data}`, so this needs no per-view change). Only writes when `response.status_code < 400`.
+4. **Action resolution**: most routes are single-purpose and just need a static `action` in the config row. Generic multi-purpose routes (e.g. `PATCH /tasks/:id`) need a `resolve_action(before, after)` diff function — same mutually-exclusive priority-order branching as the service's own update logic, reimplemented as a field-diff rule table.
+5. **Write**: dispatched as a Celery task from the middleware after the response is fully formed (fire-and-forget — Django has no direct equivalent of Express's post-response hook, so queuing a Celery task at that point is the idiomatic substitute for "never blocks the response"). Logged on failure, never rolls back or blocks the parent request.
 
-Same event → action mapping as the original backend (`TaskService.create()` → `TASK_CREATED`, `.accept()`/`.done_a()`/`.done_d()`/`.cancel()` → `TASK_STATUS_CHANGED`, `.reassign()` → `TASK_REASSIGNED`, evidence/broadcast/auth/tenant events, etc. — see the original repo's `guidelines.md` §Audit Logging for the full table; port it verbatim, the events didn't change).
+**The one documented exception — login/logout:** the OTP-verify and logout flows make no entity mutation the generic middleware can observe. Resolved the same way as upstream: `User.last_login_at`/`last_logout_at` are written directly by the auth service for their own legitimate session-tracking purpose (see `apps/users/models.py`), and the middleware picks up `USER_LOGIN`/`USER_LOGOUT` off of *that* field write the same generic way as everything else. No manual audit call is added anywhere for this — it's a schema/business-field change, not an audit-specific code path.
 
-Audit log failures are non-fatal (log to error, do not roll back the parent transaction) but the call itself is not fire-and-forget — always `await`/call synchronously inline, don't silently swallow exceptions from it.
+Same event → action mapping as the original backend (`TaskService.create()` → `TASK_CREATED`, `.accept()`/`.done_a()`/`.done_d()`/`.cancel()` → `TASK_STATUS_CHANGED`, `.reassign()` → `TASK_REASSIGNED`, evidence/broadcast/auth/tenant events, plus the newer platform-admin events `TENANT_CREATED`/`MEMBER_ADDED`/`MEMBER_REMOVED`/`MEMBERS_BULK_IMPORTED` — see `docs/architecture/domain-model.md`'s `AuditAction` enum table for the full current list).
+
+`AuditLog.entity_type` is **UPPERCASE** (`"TASK"`, `"BROADCAST"`, `"USER"`, `"DOCUMENT"`, `"TENANT"`) — deliberately diverges from `Notification.entity_type`, which stays lowercase. `actor_id` is null for `SYSTEM` **and** `PLATFORM_ADMIN` actions (`PlatformAdmin` is a separate model from `User`, so there's no valid FK target either way) — `actor_type` distinguishes which.
 
 **Never put in `before`/`after`:** message text, comment text, task descriptions, names, email — structural/status fields only.
 
@@ -221,7 +214,7 @@ Audit log failures are non-fatal (log to error, do not roll back the parent tran
 - Migrations only (`python manage.py makemigrations` / `migrate`) — no manual schema changes in any environment.
 - Every model: `id` (UUID, `default=uuid.uuid4`, `editable=False`), `created_at`, `updated_at` (`auto_now_add`/`auto_now`).
 - Tenant-scoped tables carry `tenant_id` (UUID, `db_index=True`, not null). Child tables scoped via owner/parent FK.
-- Foreign keys declared on the model (`on_delete=models.PROTECT` unless cascade is the documented rule — e.g. cancelling a parent task cascades to subtasks, but that's app-level logic in the service, not a DB `CASCADE`).
+- Foreign keys declared on the model (`on_delete=models.PROTECT` unless cascade is the documented rule — e.g. cancelling a parent task cascades to subtasks, but that's app-level logic in the service, not a DB `CASCADE`). Two documented DB-level exceptions exist: `VoiceRecording.task` and `BroadcastAcknowledgement.broadcast` are both `CASCADE` — the latter corrected 2026-07-13 upstream after `PROTECT` 500'd `DELETE /broadcast-notices/:id` for any broadcast with acknowledgements.
 - Completed main tasks are **archived** via `is_archived=True` (set on DoneD), never deleted.
 - No raw SQL / stored procedures that bypass the application auth layer.
 - Avoid N+1 queries — use `select_related` / `prefetch_related` in repositories.

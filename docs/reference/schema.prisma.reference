@@ -1,18 +1,11 @@
 // bolo-backend/prisma/schema.prisma
-// BOLO — Web MVP Schema (V1.1)
-// Reconciled to docs/architecture/domain-model.md and docs/product/prd.md
-// (BOLO Web PRD v1.1, updated 2026-06-18)
-//
-// Tenant isolation: every tenant-scoped row carries `tenantId`. All queries MUST be
-// scoped WHERE tenant_id = :currentTenantId (Row-Level Security on tenant_id, single
-// deployment). JWT carries tenantId; middleware injects it — never trust it from body.
+// BOLO — Web MVP Schema (V1.2)
+// Label model redesign: single ProjectLabel table, dual FK on Task (mainLabelId + assigneeLabelId).
+// TaskPersonalLabel table removed. 14 tables total.
 
 generator client {
   provider      = "prisma-client-js"
   binaryTargets = ["native", "linux-musl-openssl-3.0.x"]
-  // NOTE: "tracing" preview feature deliberately omitted — requires
-  // @prisma/instrumentation, which is incompatible with the current
-  // OpenTelemetry SDK at this Prisma version. See observability/tracing.ts.
 }
 
 datasource db {
@@ -27,8 +20,6 @@ enum Vertical {
   CA_CS
 }
 
-// Org-level standing — Education: Dean/HoD/Faculty, CA_CS: Director/HoD/Employees
-// Task-level roles (Delegator/Assignee) are derived from Task.assignerId/assigneeId, not stored here
 enum OrgRoleLevel {
   TOP
   MID
@@ -45,8 +36,8 @@ enum TaskStatus {
   OPEN
   IN_PROGRESS
   OVERDUE
-  DONE_A // assignee self-reported complete
-  DONE_D // assigner confirmed; task archived
+  DONE_A
+  DONE_D
   CANCELLED
 }
 
@@ -55,7 +46,6 @@ enum AcceptanceStatus {
   ACCEPTED
 }
 
-// PRD v1.1 default: P3
 enum Priority {
   P1
   P2
@@ -76,12 +66,12 @@ enum BroadcastStatus {
 }
 
 enum AuditActorType {
-  USER // user-initiated action
-  SYSTEM // scheduler, AI nudge, EventBridge
+  USER
+  SYSTEM
+  PLATFORM_ADMIN
 }
 
 enum AuditAction {
-  // Task & Subtask
   TASK_CREATED
   TASK_UPDATED
   TASK_DELETED
@@ -95,32 +85,31 @@ enum AuditAction {
   SUBTASK_CREATED
   SUBTASK_UPDATED
   SUBTASK_DELETED
-  // Documents
   DOCUMENT_UPLOADED
   DOCUMENT_DELETED
   DOCUMENT_DOWNLOADED
   DOCUMENT_ACCESSED
-  // Broadcast
   BROADCAST_CREATED
   BROADCAST_UPDATED
   BROADCAST_DELETED
   BROADCAST_PUBLISHED
   BROADCAST_ACKNOWLEDGED
   BROADCAST_VIEWED
-  // Audience Scope
   AUDIENCE_SCOPE_CREATED
   AUDIENCE_SCOPE_MODIFIED
   AUDIENCE_SCOPE_ASSIGNMENT_CHANGED
-  // User Activity
   USER_LOGIN
   USER_LOGOUT
   USER_PROFILE_UPDATED
   USER_ROLE_CHANGED
   USER_PERMISSION_CHANGED
+  TENANT_CREATED
+  MEMBER_ADDED
+  MEMBER_REMOVED
+  MEMBERS_BULK_IMPORTED
 }
 
 enum NotificationType {
-  // Task
   TASK_ASSIGNED
   TASK_ACCEPTED
   TASK_REASSIGNED
@@ -133,13 +122,13 @@ enum NotificationType {
   TASK_DUE_TODAY
   TASK_DUE_TOMORROW
   TASK_OVERDUE
-  // Subtask
   SUBTASK_CREATED
   SUBTASK_EDITED
   SUBTASK_DONE_A
   SUBTASK_DONE_D
-  // Broadcast
   BROADCAST_POSTED
+  // Evidence
+  EVIDENCE_ATTACHED
   // Reminder (StickyNote with dueAt — W30 resolved)
   REMINDER_FIRED
   // AI Nudge — redesigned 2026-07-06, 2 types (AI_NUDGE_PERIODIC retired,
@@ -148,9 +137,31 @@ enum NotificationType {
   AI_NUDGE_DUE_PROXIMITY
 }
 
+// ─── Platform Admin (superadmin — cross-tenant, outside RLS/tenant scoping) ────
+
+model PlatformAdmin {
+  id        String   @id
+  name      String
+  email     String   @unique
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("platform_admins")
+}
+
+model PlatformAdminOtpCode {
+  id          String    @id
+  email       String    @unique
+  hashedCode  String
+  expiresAt   DateTime
+  attempts    Int       @default(0)
+  lockedUntil DateTime?
+  createdAt   DateTime  @default(now())
+
+  @@map("platform_admin_otp_codes")
+}
+
 // ─── Tenant ───────────────────────────────────────────────────────────────────
-// A college, a CA/CS firm, etc. Root of all tenant-scoped data.
-// Single shared DB — isolation via tenantId on every row + RLS.
 
 model Tenant {
   id        String   @id
@@ -159,23 +170,21 @@ model Tenant {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  users           User[]
-  departments     Department[]
-  memberships     TenantMembership[]
-  projectLabels   ProjectLabel[]
-  tasks           Task[]
-  broadcasts      BroadcastNotice[]
-  notifications   Notification[]
+  users             User[]
+  departments       Department[]
+  memberships       TenantMembership[]
+  projectLabels     ProjectLabel[]
+  tasks             Task[]
+  broadcasts        BroadcastNotice[]
+  notifications     Notification[]
   nudgeSkipCounters NudgeSkipCounter[]
-  auditLogs       AuditLog[]
-  voiceRecordings VoiceRecording[]
+  auditLogs         AuditLog[]
+  voiceRecordings   VoiceRecording[]
 
   @@map("tenants")
 }
 
 // ─── User ─────────────────────────────────────────────────────────────────────
-// Login is Email + OTP — no password stored.
-// Single tenant per user (W56). tenantId on User = quick FK for RLS scoping.
 
 model User {
   id            String   @id
@@ -183,7 +192,10 @@ model User {
   name          String
   email         String   @unique
   phone         String?
+  profilePicUrl String?  // S3 object key; pre-signed GET URL generated per request (mirrors Evidence.fileUrl)
   preferredLang Language @default(EN)
+  lastLoginAt   DateTime?
+  lastLogoutAt  DateTime?
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
 
@@ -196,10 +208,8 @@ model User {
   evidenceUploaded          Evidence[]
   comments                  Comment[]
   stickyNotes               StickyNote[]
-  personalLabels            TaskPersonalLabel[]
   broadcastAcknowledgements BroadcastAcknowledgement[]
   notificationsReceived     Notification[]             @relation("NotificationRecipient")
-  nudgeSkipCounters         NudgeSkipCounter[]
   broadcastsSent            BroadcastNotice[]          @relation("BroadcastSender")
   auditLogsActioned         AuditLog[]                 @relation("AuditLogActor")
   projectLabelsCreated      ProjectLabel[]             @relation("ProjectLabelCreator")
@@ -214,7 +224,7 @@ model Department {
   id         String   @id
   tenantId   String
   name       String
-  headUserId String?  @unique // null until a head is assigned; one user heads at most one dept
+  headUserId String?  @unique
   createdAt  DateTime @default(now())
   updatedAt  DateTime @updatedAt
 
@@ -229,17 +239,14 @@ model Department {
 }
 
 // ─── TenantMembership ─────────────────────────────────────────────────────────
-// Org-level role + department + reporting chain.
-// reportsToId builds the org chart tree — null = root of the tree.
-// canBroadcast is a binary permission flag, not derived from roleLevel (W22 resolved).
 
 model TenantMembership {
-  userId       String       @unique // single tenant per user (W56) — enforces one-to-one with User.membership
+  userId       String       @unique
   tenantId     String
   departmentId String?
   roleLevel    OrgRoleLevel
-  roleLabel    String? // "Dean" | "HoD" | "Faculty" — from Excel onboarding
-  reportsToId  String? // FK → User; null = top of the org tree
+  roleLabel    String?
+  reportsToId  String?
   canBroadcast Boolean      @default(false)
   joinedAt     DateTime     @default(now())
 
@@ -256,24 +263,25 @@ model TenantMembership {
 }
 
 // ─── OtpCode ──────────────────────────────────────────────────────────────────
-// Transient — deleted immediately after successful verify (Layer 2).
-// EventBridge sweeps expired rows every 15 min (Layer 3).
 
 model OtpCode {
   id          String    @id
   email       String    @unique
-  hashedCode  String // SHA-256 hash — never store plain OTP
-  expiresAt   DateTime // createdAt + 10 min
-  attempts    Int       @default(0) // lock after 3 wrong attempts
-  lockedUntil DateTime? // set after MAX_ATTEMPTS wrong tries
+  hashedCode  String
+  expiresAt   DateTime
+  attempts    Int       @default(0)
+  lockedUntil DateTime?
   createdAt   DateTime  @default(now())
 
   @@map("otp_codes")
 }
 
-// ─── ProjectLabel (Main Label — Tier 1) ───────────────────────────────────────
-// Set by the task assigner; visible to all users with task access.
-// Personal labels (Tier 2) live in TaskPersonalLabel.
+// ─── ProjectLabel ─────────────────────────────────────────────────────────────
+// Single label pool. Serves two purposes via dual FK on Task:
+//   mainLabelId      — assigner sets; visible to all who can see the task.
+//   assigneeLabelId  — assignee sets; private; never returned to non-assignees.
+// Each user sees only labels they created (createdBy = req.userId).
+// onDelete: Restrict on both FKs — cannot delete while applied to any task.
 
 model ProjectLabel {
   id          String   @id
@@ -285,22 +293,18 @@ model ProjectLabel {
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
-  tenant  Tenant @relation(fields: [tenantId], references: [id])
-  creator User   @relation("ProjectLabelCreator", fields: [createdBy], references: [id])
-  tasks   Task[]
+  tenant            Tenant @relation(fields: [tenantId], references: [id])
+  creator           User   @relation("ProjectLabelCreator", fields: [createdBy], references: [id])
+  mainLabelTasks    Task[] @relation("MainLabel")
+  assigneeLabelTasks Task[] @relation("AssigneeLabel")
 
-  @@unique([tenantId, name])
+  @@unique([createdBy, name])
   @@index([tenantId])
   @@index([createdBy])
   @@map("project_labels")
 }
 
 // ─── Task (and Subtask via self-reference) ────────────────────────────────────
-// Required to create: title + assigneeId.
-// dueDate optional while Draft; required at Draft → Open transition (W-C3 resolved).
-// A Task with parentTaskId set IS a subtask — same fields, same rules, no separate table.
-// Title is immutable after creation — enforced in service layer.
-// isArchived = true only when assigner marks DONE_D on a main task (parentTaskId IS NULL).
 
 model Task {
   id               String           @id
@@ -313,40 +317,37 @@ model Task {
   priority         Priority         @default(P3)
   dueDate          DateTime?
   description      String?
-  projectLabelId   String?
+  mainLabelId      String?
+  assigneeLabelId  String?
   isArchived       Boolean          @default(false)
   acceptedAt       DateTime?
   parentTaskId     String?
   createdAt        DateTime         @default(now())
   updatedAt        DateTime         @updatedAt
 
-  tenant           Tenant              @relation(fields: [tenantId], references: [id])
-  assigner         User                @relation("TaskAssigner", fields: [assignerId], references: [id])
-  assignee         User                @relation("TaskAssignee", fields: [assigneeId], references: [id])
-  projectLabel     ProjectLabel?       @relation(fields: [projectLabelId], references: [id])
-  parent           Task?               @relation("Subtasks", fields: [parentTaskId], references: [id])
-  subtasks         Task[]              @relation("Subtasks")
+  tenant           Tenant          @relation(fields: [tenantId], references: [id])
+  assigner         User            @relation("TaskAssigner", fields: [assignerId], references: [id])
+  assignee         User            @relation("TaskAssignee", fields: [assigneeId], references: [id])
+  mainLabel        ProjectLabel?   @relation("MainLabel", fields: [mainLabelId], references: [id], onDelete: Restrict)
+  assigneeLabel    ProjectLabel?   @relation("AssigneeLabel", fields: [assigneeLabelId], references: [id], onDelete: Restrict)
+  parent           Task?           @relation("Subtasks", fields: [parentTaskId], references: [id])
+  subtasks         Task[]          @relation("Subtasks")
   evidence         Evidence[]
   comments         Comment[]
-  personalLabels   TaskPersonalLabel[]
-  promotedFromNote StickyNote?         @relation("StickyNotePromotion")
+  promotedFromNote StickyNote?     @relation("StickyNotePromotion")
   voiceRecording   VoiceRecording?
 
   @@index([tenantId])
   @@index([assigneeId])
   @@index([assignerId])
   @@index([parentTaskId])
-  @@index([projectLabelId])
+  @@index([mainLabelId])
+  @@index([assigneeLabelId])
   @@index([status])
   @@map("tasks")
 }
 
 // ─── VoiceRecording ───────────────────────────────────────────────────────────
-// 1:1 with Task (including subtasks). Created in same DB tx as the task.
-// rawTranscript always stored. audioUrl is opt-in (W37) — S3 object key, not URL.
-// Pre-signed GET URL (15 min TTL) generated on demand. Raw key never returned in API.
-// Access: assigner + assignee only (W38). Retention: 6 months–1 year (W41).
-// Two-phase save: transcript atomic with task; audio uploaded async post-201.
 
 model VoiceRecording {
   id              String   @id @default(uuid())
@@ -367,33 +368,7 @@ model VoiceRecording {
   @@map("voice_recordings")
 }
 
-// ─── TaskPersonalLabel (Personal Labels — Tier 2) ─────────────────────────────
-// Private per user — only the user who added it can see it.
-// Free text — autocomplete from DISTINCT label WHERE userId.
-
-model TaskPersonalLabel {
-  id          String   @id
-  taskId      String
-  userId      String
-  label       String
-  colorCode   String   @default("#6B7280")
-  description String?
-  createdAt   DateTime @default(now())
-
-  task Task @relation(fields: [taskId], references: [id])
-  user User @relation(fields: [userId], references: [id])
-
-  @@unique([taskId, userId, label])
-  @@index([userId])
-  @@index([taskId])
-  @@map("task_personal_labels")
-}
-
 // ─── Evidence ─────────────────────────────────────────────────────────────────
-// File/photo attachments on tasks and subtasks.
-// No GPS — web platform, no device location API in V1.
-// No task-level aggregate cap — per-file size limit TBD (PRD v1.1 §3.5).
-// Files stored in S3; fileUrl is the object key — pre-signed URL generated per request.
 
 model Evidence {
   id         String       @id
@@ -401,7 +376,7 @@ model Evidence {
   uploaderId String
   fileUrl    String
   fileName   String
-  fileSize   Int // bytes — ready for per-file limit enforcement when confirmed
+  fileSize   Int
   fileType   EvidenceType
   caption    String?
   createdAt  DateTime     @default(now())
@@ -415,7 +390,6 @@ model Evidence {
 }
 
 // ─── Comment ──────────────────────────────────────────────────────────────────
-// Progress updates on tasks and subtasks. Full CRUD — author can edit and delete.
 
 model Comment {
   id        String   @id
@@ -435,16 +409,14 @@ model Comment {
 }
 
 // ─── StickyNote ───────────────────────────────────────────────────────────────
-// Personal, always private. A StickyNote with dueAt IS the reminder (W30 resolved).
-// No separate Reminder entity.
 
 model StickyNote {
   id               String    @id
   userId           String
   text             String
-  dueAt            DateTime? // when set → reminder; shown red when imminent/past
+  dueAt            DateTime?
   isPinned         Boolean   @default(false)
-  promotedToTaskId String?   @unique // set when this note is converted to a task; one note → one task
+  promotedToTaskId String?   @unique
   createdAt        DateTime  @default(now())
   updatedAt        DateTime  @updatedAt
 
@@ -456,23 +428,20 @@ model StickyNote {
   @@map("sticky_notes")
 }
 
-// ─── BroadcastNotice ─────────────────────────────────────────────────────────
-// Audience scope is mandatory at publish time (PRD v1.1).
-// Single image only. Rich text stored as both JSON (editor) and HTML (display).
-// expiresAt = createdAt + 1 day, set on publish — not configurable (W54 resolved).
+// ─── BroadcastNotice ──────────────────────────────────────────────────────────
 
 model BroadcastNotice {
   id                      String          @id
   tenantId                String
   senderId                String
-  messageJson             Json // TipTap AST — restores editor state on re-open
-  messageHtml             String // sanitized HTML — rendered in broadcast feed
+  messageJson             Json
+  messageHtml             String
   status                  BroadcastStatus @default(DRAFT)
-  audienceDeptId          String? // null = all departments
-  audienceRoleLevel       OrgRoleLevel? // null = all role levels
+  audienceDeptId          String?
+  audienceRoleLevel       OrgRoleLevel?
   requiresAcknowledgement Boolean         @default(false)
-  imageUrl                String? // single image only — PRD v1.1
-  expiresAt               DateTime? // set to createdAt + 1 day on publish
+  imageUrl                String?
+  expiresAt               DateTime?
   createdAt               DateTime        @default(now())
   updatedAt               DateTime        @updatedAt
 
@@ -488,16 +457,14 @@ model BroadcastNotice {
   @@map("broadcast_notices")
 }
 
-// ─── BroadcastAcknowledgement ────────────────────────────────────────────────
-// One row per user per broadcast. Composite PK prevents double-counting.
-// Sender sees COUNT(*) only — no per-person breakdown (PRD v1.1).
+// ─── BroadcastAcknowledgement ─────────────────────────────────────────────────
 
 model BroadcastAcknowledgement {
   broadcastId    String
   userId         String
   acknowledgedAt DateTime @default(now())
 
-  broadcast BroadcastNotice @relation(fields: [broadcastId], references: [id])
+  broadcast BroadcastNotice @relation(fields: [broadcastId], references: [id], onDelete: Cascade)
   user      User            @relation(fields: [userId], references: [id])
 
   @@id([broadcastId, userId])
@@ -506,26 +473,24 @@ model BroadcastAcknowledgement {
 }
 
 // ─── Notification ─────────────────────────────────────────────────────────────
-// In-app only for V1. Covers all 13 domain events + 3 AI nudge types (PRD v1.1).
-// entityType + entityId = polymorphic reference — no nullable FK per entity type.
 
 model Notification {
-  id          String           @id
-  tenantId    String
-  recipientId String
-  type        NotificationType
-  entityType  String // "task" | "broadcast" | "sticky_note"
-  entityId    String // ID of the related entity
-  message     String // pre-rendered text e.g. "Mehta assigned you a task"
+  id            String           @id
+  tenantId      String
+  recipientId   String
+  type          NotificationType
+  entityType    String // "task" | "broadcast" | "sticky_note"
+  entityId      String // ID of the related entity
+  message       String // pre-rendered text e.g. "Mehta assigned you a task"
   // Enriched display fields for the general Notification panel (feature/notification-panel,
   // bolo-web) — optional, populated where the creating call site has the data on hand.
   // UI degrades gracefully when absent (falls back to plain `message` text only).
   actorName     String? // person who triggered the event, bolded in the panel UI
   entityTitle   String? // e.g. task title — shown below message
   entityContext String? // e.g. department/label — shown below entityTitle
-  isRead      Boolean          @default(false)
-  readAt      DateTime?
-  createdAt   DateTime         @default(now())
+  isRead        Boolean          @default(false)
+  readAt        DateTime?
+  createdAt     DateTime         @default(now())
 
   tenant    Tenant @relation(fields: [tenantId], references: [id])
   recipient User   @relation("NotificationRecipient", fields: [recipientId], references: [id])
@@ -547,28 +512,30 @@ model Notification {
 model NudgeSkipCounter {
   id          String    @id
   tenantId    String
-  userId      String
-  entityType  String // "task" | "sticky_note" | "broadcast"
+  entityType  String // "task" — scope narrowed 2026-07-13 (Broadcast/StickyNote/Subtask dropped)
   entityId    String
-  nudgeKind   String // "followup_not_accepted" | "followup_no_progress" | "followup_unanswered_comment" |
-  // "followup_done_a_pending" | "followup_subtasks_done_pending" | "due_proximity"
+  nudgeKind   String // "followup_no_progress" | "followup_unanswered_comment" | "due_proximity"
   skipCount   Int       @default(0)
-  escalatedAt DateTime? // only ever set for Task due-proximity
+  escalatedAt DateTime? // due-proximity only, one-time escalation-to-assigner guard
+  // Last time this candidate was actually included in a GET /nudges response (not just
+  // when its notification last fired) — drives Follow-up's oldest-shown-first rotation
+  // when there are more eligible candidates than the feed's 5-slot cap.
+  lastShownAt DateTime?
   createdAt   DateTime  @default(now())
   updatedAt   DateTime  @updatedAt
 
   tenant Tenant @relation(fields: [tenantId], references: [id])
-  user   User   @relation(fields: [userId], references: [id])
 
-  @@unique([userId, entityType, entityId, nudgeKind])
+  // Back to simple per-task keying (userId dropped 2026-07-13) — it was only needed for
+  // Broadcast's many-recipients-per-entity case, which is out of scope now that Broadcast
+  // itself is dropped. Task/Subtask always have exactly one assignee, so entity-only
+  // keying is unambiguous again.
+  @@unique([entityType, entityId, nudgeKind])
   @@index([tenantId])
   @@map("nudge_skip_counters")
 }
 
 // ─── AuditLog ─────────────────────────────────────────────────────────────────
-// Immutable records — never updated or deleted.
-// Covers all events from PRD v1.1 §15. CA/CS vertical has longer retention (TBD).
-// actorId null for system-triggered events (scheduler, EventBridge).
 
 model AuditLog {
   id         String         @id
@@ -576,11 +543,11 @@ model AuditLog {
   actorId    String?
   actorType  AuditActorType @default(USER)
   action     AuditAction
-  entityType String // "task" | "broadcast" | "user" | "document"
+  entityType String
   entityId   String
-  before     Json? // state before the change — null for creates
-  after      Json? // state after the change — null for deletes
-  metadata   Json? // IP address, user agent, session context
+  before     Json?
+  after      Json?
+  metadata   Json?
   createdAt  DateTime       @default(now())
 
   tenant Tenant @relation(fields: [tenantId], references: [id])

@@ -40,7 +40,7 @@
 2. **Open Grafana Loki** — query `{service_name="bolo-backend", level="error"}` for the error message and stack trace.
 3. Check if a deploy happened in the last 30 minutes → if yes, roll back (see [`deployment.md`](./deployment.md)) — rollback is ~60s via image tag swap.
 4. If a specific route: open a trace for that route in Jaeger/Grafana Cloud Traces (click TraceID link from the Loki error log line).
-5. Check third-party services (Sarvam STT, SMTP) — are they returning errors?
+5. Check third-party services (Sarvam STT, AWS SES) — are they returning errors?
 6. If DB is the issue: check `pg_stat_activity` for blocking queries.
 7. No root cause found → escalate.
 
@@ -83,8 +83,8 @@ histogram_quantile(0.95, sum by (le, route) (rate(http_request_duration_seconds_
 2. Verify the `Notification` rows exist in DB (`SELECT * FROM "Notification" ORDER BY "createdAt" DESC LIMIT 20`).
 
 **Email notifications (TASK_REMINDER, TASK_DUE_TODAY/TOMORROW, TASK_OVERDUE):**
-1. Check Loki for SMTP errors: `{service_name="bolo-backend", level="error"} | json | msg=\`email send failed\``.
-2. Verify SMTP credentials are set (`SMTP_HOST`, `SMTP_USER`, `SMTP_PASS` in env).
+1. Check Loki for SES errors: `{service_name="bolo-backend", level="error"} | json | msg=\`email send failed\``.
+2. Verify `SES_FROM_EMAIL` is set and the sender identity is still Verified in the SES console (domain/DKIM can lapse) — sent via IAM role (`bolo-ec2-role`'s `ses:SendEmail`/`ses:SendRawEmail`), no `SMTP_*` credentials exist anymore (updated 2026-07-18, was SMTP).
 3. Email failures are swallowed (logged, not thrown) — the task operation will have succeeded even if email failed.
 
 ---

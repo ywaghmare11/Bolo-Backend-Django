@@ -30,7 +30,15 @@ python manage.py migrate
 python manage.py runserver
 ```
 
-(This section will be filled in with real, tested commands once the project is actually scaffolded with `django-admin startproject`.)
+To run the test suite, the `DATABASE_URL` role needs `CREATEDB` (pytest-django creates and destroys a throwaway `test_<dbname>` database per run):
+
+```sql
+ALTER USER bolo_django CREATEDB;
+```
+
+```bash
+pytest
+```
 
 ## Key docs
 

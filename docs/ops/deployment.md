@@ -211,15 +211,17 @@ Secrets are split by who needs them and when:
 - ~~`EC2_HOST`~~ — removed (SSM targets by instance ID, not IP)
 
 **AWS Secrets Manager** — sensitive runtime secrets the app needs (₹165–200/month for 4–5 secrets):
-- `DB_PASSWORD` (or full `DATABASE_URL`)
+- `DATABASE_URL` (full connection string, password embedded — not a separate `DB_PASSWORD` secret; Prisma needs one assembled string, storing both duplicates the password across two stores with no consumer for the standalone value — decided 2026-07-16)
 - `JWT_SECRET`
-- `SMTP_PASSWORD`
-- Third-party API keys (Voice AI SDK, etc.)
+- Third-party API keys (Voice AI SDK, OpenAI, etc.)
+- ~~`SMTP_PASSWORD`~~ — removed 2026-07-16, see below (SES decided, W100)
 
 **AWS SSM Parameter Store standard tier** — non-sensitive config (free):
 - `NODE_ENV`, `PORT`
-- `SMTP_HOST`, `SMTP_FROM`
 - `S3_BUCKET_NAME`, `AWS_REGION`
+- ~~`SMTP_HOST`, `SMTP_FROM`~~ — removed 2026-07-16, see below
+
+**Transactional email — AWS SES (decided 2026-07-16, client-confirmed, resolves W100):** was previously documented as Gmail SMTP via nodemailer; client confirmed SES instead, matching `prd.md`/`security.md`/`api-spec.md`/`sprint-plan-4w.md` (those docs had SES all along — this was a stale-doc drift, not a new decision). Domain-verified in SES as of 2026-07-17 (Step 8). `bolo-ec2-role` granted `ses:SendEmail` + `ses:SendRawEmail`. **Transport decided 2026-07-18: AWS SDK (`@aws-sdk/client-ses`), not the SMTP interface** — IAM-role-only via the default provider chain, consistent with how this project accesses S3/ECR, no new secret to manage. `src/utils/email.ts` implemented accordingly; `nodemailer` removed from `bolo-backend`.
 
 - EC2 IAM role grants read access to both Secrets Manager and SSM — no static credentials in `.env` for these
 - Startup script fetches from Secrets Manager + SSM → writes to `/app/.env` → `docker compose up -d` reads it
@@ -331,7 +333,7 @@ Config files: `bolo-backend/observability/prometheus.yml`, `alloy-config.alloy`,
 4. Alloy's `discovery.docker` finds every container on the host (postgres, loki, prometheus, itself, ...) with no relabeling, so all logs landed under one generic `unknown_service` label in Loki — added a `discovery.relabel` step mapping `__meta_docker_container_name` → `service_name`.
 5. `pino-pretty` was tied to `NODE_ENV=development` (which `docker-compose.yml` sets for the backend), fragmenting every structured JSON log line into ~10 unparseable multi-line entries once ingested by Loki. Decoupled via a new `LOG_PRETTY` env var (opt-in, for local `npm run dev` only — never set in `docker-compose.yml`).
 
-**Secrets handling (2026-07-01):** `docker-compose.yml`'s `backend.environment` block references `SMTP_*`/`OPENAI_API_KEY`/`SARVAM_API_KEY` via `${VAR}` interpolation — real values live only in `bolo-backend/.env` (gitignored), which Compose automatically substitutes from since it sits in the same directory as `docker-compose.yml`. Never hardcode real secrets directly into `docker-compose.yml` — it's a tracked file in the `bolo-backend` repo. Verified via `docker compose config`.
+**Secrets handling (2026-07-01, updated 2026-07-18 — SMTP_* → SES_FROM_EMAIL):** `docker-compose.yml`'s `backend.environment` block references `SES_FROM_EMAIL`/`OPENAI_API_KEY`/`SARVAM_API_KEY` via `${VAR}` interpolation — real values live only in `bolo-backend/.env` (gitignored), which Compose automatically substitutes from since it sits in the same directory as `docker-compose.yml`. Never hardcode real secrets directly into `docker-compose.yml` — it's a tracked file in the `bolo-backend` repo. Verified via `docker compose config`.
 
 **Confirmed working after fixes:** a real request's structured logs are queryable in Loki via LogQL (`{service_name="bolo-backend-backend-1"} | json | msg="request completed"`); metrics appear in Prometheus under `job="prometheus.scrape.backend"`; **a full multi-span trace** appears in Jaeger — Express auto-instrumentation breaks down every middleware (cors, jsonParser, cookieParser, metricsMiddleware, the route handler) as its own child span, richer than the single-root-span originally assumed; Grafana auto-provisions all 3 datasources (Prometheus, Loki, Jaeger) via `grafana-datasources.yml`.
 

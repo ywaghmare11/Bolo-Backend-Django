@@ -15,9 +15,11 @@
     { "key": "broadcastId",    "value": "", "type": "string" },
     { "key": "notificationId", "value": "", "type": "string" },
     { "key": "evidenceId",     "value": "", "type": "string" },
+    { "key": "voiceS3Key",     "value": "", "type": "string" },
     { "key": "userId",         "value": "", "type": "string" },
-    { "key": "invitedUserId",  "value": "", "type": "string" },
-    { "key": "deptId",         "value": "", "type": "string" }
+    { "key": "deptId",         "value": "", "type": "string" },
+    { "key": "platformTenantId",   "value": "", "type": "string" },
+    { "key": "platformMemberUserId", "value": "", "type": "string" }
   ],
   "item": [
 
@@ -30,39 +32,6 @@
             "method": "GET",
             "url": "{{baseUrl}}/api/v1/health",
             "description": "Public — no auth required."
-          }
-        }
-      ]
-    },
-
-    {
-      "name": "Onboarding",
-      "item": [
-        {
-          "name": "Register Tenant",
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "exec": [
-                  "if (pm.response.code === 201) {",
-                  "  const d = pm.response.json().data;",
-                  "  pm.collectionVariables.set('userId', d.admin.userId);",
-                  "  console.log('Tenant created:', d.tenantId, '| Admin userId:', d.admin.userId);",
-                  "}"
-                ]
-              }
-            }
-          ],
-          "request": {
-            "method": "POST",
-            "url": "{{baseUrl}}/api/v1/onboard/register",
-            "header": [{ "key": "Content-Type", "value": "application/json" }],
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"tenantName\": \"AIBIGO Institute\",\n  \"vertical\": \"EDUCATION\",\n  \"adminName\": \"Dr. Sarang Jadhav\",\n  \"adminEmail\": \"sarangjadhav661@gmail.com\",\n  \"adminPhone\": \"+919876543210\",\n  \"roleLabel\": \"Dean\",\n  \"preferredLang\": \"EN\"\n}"
-            },
-            "description": "Public — no auth required. Creates Tenant + first TOP user + TenantMembership atomically.\n\nvertical: EDUCATION | CA_CS\nroleLabel: optional — defaults to Dean (EDUCATION) or Director (CA_CS)\npreferredLang: EN | HI (optional, default EN)"
           }
         }
       ]
@@ -482,6 +451,68 @@
     },
 
     {
+      "name": "Voice Recording",
+      "description": "Transcript is saved atomically with the task by POST /tasks (Tasks folder). This is the separate, optional two-phase audio flow: presign → PUT to S3 → confirm.",
+      "item": [
+        {
+          "name": "Get Pre-signed Voice Upload URL",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "if (pm.response.code === 200) {",
+                  "  const key = pm.response.json().data?.s3Key;",
+                  "  if (key) pm.collectionVariables.set('voiceS3Key', key);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/api/v1/upload/voice-presign",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"taskId\": \"{{taskId}}\",\n  \"filename\": \"voice.webm\",\n  \"contentType\": \"audio/webm\",\n  \"durationSecs\": 12\n}"
+            },
+            "description": "Called after POST /tasks (with a voiceRecording body) returns 201. Returns { uploadUrl, s3Key, expiresIn }. Client PUTs the audio blob directly to uploadUrl, then calls Confirm Audio. 400 if the task has no voice_recordings row (i.e. it wasn't created via voice) or contentType is unsupported. Caller must be assigner or assignee."
+          }
+        },
+        {
+          "name": "Confirm Audio (After S3 Upload)",
+          "request": {
+            "method": "PATCH",
+            "url": "{{baseUrl}}/api/v1/tasks/{{taskId}}/voice-recording/audio",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"s3Key\": \"{{voiceS3Key}}\"\n}"
+            },
+            "description": "Call after the S3 PUT succeeds. Server moves the object from unconfirmed/ to the confirmed path and sets audioUrl. Idempotent — safe to retry. Returns { hasAudio: true }."
+          }
+        },
+        {
+          "name": "Get Transcript & Metadata",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/v1/tasks/{{taskId}}/voice-recording",
+            "description": "Returns rawTranscript, language, durationSecs, confidenceScore, hasAudio. Never returns the raw S3 key. 404 if the task has no voice recording."
+          }
+        },
+        {
+          "name": "Get Playback URL",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/v1/tasks/{{taskId}}/voice-recording/audio",
+            "description": "Returns a fresh 15-min pre-signed playback URL. Only callable if hasAudio is true — 404 if no audio is stored."
+          }
+        }
+      ]
+    },
+
+    {
       "name": "Personal Labels",
       "description": "Tier-2 private labels — visible only to the user who added them. Both assigner and assignee can add labels independently.",
       "item": [
@@ -700,15 +731,16 @@
           "request": {
             "method": "GET",
             "url": {
-              "raw": "{{baseUrl}}/api/v1/broadcast-notices?page=1&limit=20",
+              "raw": "{{baseUrl}}/api/v1/broadcast-notices?view=received&page=1&limit=20",
               "host": ["{{baseUrl}}"],
               "path": ["api", "v1","broadcast-notices"],
               "query": [
+                { "key": "view",  "value": "received", "description": "'received' (default) or 'sent' - added 2026-07-14 (W97)" },
                 { "key": "page",  "value": "1" },
                 { "key": "limit", "value": "20" }
               ]
             },
-            "description": "Returns non-expired broadcasts where audience dept+roleLevel matches the caller."
+            "description": "'received' (default): non-expired broadcasts where audience dept+roleLevel matches the caller. 'sent': everything senderId=me created, any status (DRAFT+PUBLISHED, including expired)."
           }
         },
         {
@@ -890,40 +922,6 @@
           }
         },
         {
-          "name": "Invite Member",
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "exec": [
-                  "if (pm.response.code === 201) {",
-                  "  const uid = pm.response.json().data?.userId;",
-                  "  if (uid) pm.collectionVariables.set('invitedUserId', uid);",
-                  "}"
-                ]
-              }
-            }
-          ],
-          "request": {
-            "method": "POST",
-            "url": "{{baseUrl}}/api/v1/tenant/members/invite",
-            "header": [{ "key": "Content-Type", "value": "application/json" }],
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"name\": \"Prof. Riya Sharma\",\n  \"email\": \"riya.sharma@college.edu\",\n  \"roleLevel\": \"EXECUTOR\",\n  \"roleLabel\": \"Faculty\",\n  \"departmentId\": null,\n  \"reportsToId\": null,\n  \"canBroadcast\": false\n}"
-            },
-            "description": "TOP role only. Creates User + TenantMembership atomically."
-          }
-        },
-        {
-          "name": "Remove Member",
-          "request": {
-            "method": "DELETE",
-            "url": "{{baseUrl}}/api/v1/tenant/members/{{invitedUserId}}",
-            "description": "TOP role only. Cannot remove self → 403."
-          }
-        },
-        {
           "name": "Get Org Chart",
           "request": {
             "method": "GET",
@@ -932,10 +930,127 @@
           }
         },
         {
-          "name": "Bulk Import Members — Excel",
+          "name": "Request OTP (only for superadmin)",
           "request": {
             "method": "POST",
-            "url": "{{baseUrl}}/api/v1/tenant/onboard/import",
+            "url": "{{baseUrl}}/api/v1/platform-admin/auth/request-otp",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"admin@bolo.internal\"\n}"
+            },
+            "description": "Only for superadmin. Looked up against PlatformAdmin, not User. 404 ADMIN_NOT_FOUND if no row exists — admins are provisioned only via `npm run seed:platform-admin`, never self-registered."
+          }
+        },
+        {
+          "name": "Verify OTP — Login (only for superadmin)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "if (pm.response.code === 200) {",
+                  "  const data = pm.response.json().data;",
+                  "  console.log('Platform admin logged in:', data.adminId, data.email);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/api/v1/platform-admin/auth/verify-otp",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"admin@bolo.internal\",\n  \"otp\": \"123456\"\n}"
+            },
+            "description": "Only for superadmin. Exchange OTP for a platform-admin JWT. Sets httpOnly cookie `admin_token` — separate from the tenant-user `token` cookie, never collides.\n\nLockout: 3 wrong attempts → 15 min lockout."
+          }
+        },
+        {
+          "name": "Logout (only for superadmin)",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/api/v1/platform-admin/auth/logout",
+            "description": "Only for superadmin. Clears the admin_token cookie server-side."
+          }
+        },
+        {
+          "name": "Create Tenant (only for superadmin)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "if (pm.response.code === 201) {",
+                  "  const d = pm.response.json().data;",
+                  "  pm.collectionVariables.set('platformTenantId', d.tenantId);",
+                  "  console.log('Tenant created:', d.tenantId, '| Admin userId:', d.admin.userId);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/api/v1/platform-admin/tenants",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"tenantName\": \"AIBIGO Institute\",\n  \"vertical\": \"EDUCATION\",\n  \"adminName\": \"Dr. Sarang Jadhav\",\n  \"adminEmail\": \"sarangjadhav661@gmail.com\",\n  \"adminPhone\": \"+919876543210\",\n  \"roleLabel\": \"Dean\",\n  \"preferredLang\": \"EN\"\n}"
+            },
+            "description": "Only for superadmin (requires admin_token cookie — run Verify OTP above first). Creates Tenant + first TOP user + TenantMembership atomically — replaces the old, now-removed, public POST /onboard/register.\n\nvertical: EDUCATION | CA_CS\nroleLabel: optional — defaults to Dean (EDUCATION) or Director (CA_CS)\npreferredLang: EN | HI (optional, default EN)\n\nWrites an AuditLog row (action: TENANT_CREATED)."
+          }
+        },
+        {
+          "name": "List Tenants (only for superadmin)",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/v1/platform-admin/tenants",
+            "description": "Only for superadmin. Cross-tenant listing with member/department counts."
+          }
+        },
+        {
+          "name": "Add Member to Any Tenant (only for superadmin)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "if (pm.response.code === 201) {",
+                  "  const d = pm.response.json().data;",
+                  "  pm.collectionVariables.set('platformMemberUserId', d.userId);",
+                  "  console.log('Member added:', d.userId, d.email);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/api/v1/platform-admin/tenants/{{platformTenantId}}/members",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Prof. Asha Nair\",\n  \"email\": \"asha@abc.edu\",\n  \"roleLevel\": \"MID\",\n  \"roleLabel\": \"HoD\",\n  \"canBroadcast\": false\n}"
+            },
+            "description": "Only for superadmin. Same validation/shape as Invite Member above, but tenantId comes from the URL param (no tenant-scoped JWT). Writes an AuditLog row (action: MEMBER_ADDED)."
+          }
+        },
+        {
+          "name": "Remove Member from Any Tenant (only for superadmin)",
+          "request": {
+            "method": "DELETE",
+            "url": "{{baseUrl}}/api/v1/platform-admin/tenants/{{platformTenantId}}/members/{{platformMemberUserId}}",
+            "description": "Only for superadmin. Hard-deletes the TenantMembership row only — User row left intact. Writes an AuditLog row (action: MEMBER_REMOVED)."
+          }
+        },
+        {
+          "name": "Bulk Import Members — Excel (only for superadmin)",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/api/v1/platform-admin/tenants/{{platformTenantId}}/members/import",
             "header": [],
             "body": {
               "mode": "formdata",
@@ -944,24 +1059,24 @@
                   "key": "file",
                   "type": "file",
                   "src": "",
-                  "description": ".xlsx or .xls. Columns: name, email, roleLevel, roleLabel, departmentName, phone, canBroadcast. Max 5 MB."
+                  "description": ".xlsx or .xls. Same columns as the TOP-only version above. Max 50 MB."
                 }
               ]
             },
-            "description": "TOP only. Idempotent upsert by email. Auto-creates departments. Returns { created, updated, skipped, errors }."
+            "description": "Only for superadmin. Same bulkImportService as Bulk Import Members — Excel above, but tenantId comes from the URL param (any tenant). Writes an AuditLog row (action: MEMBERS_BULK_IMPORTED)."
           }
         },
         {
-          "name": "Bulk Import Members — JSON",
+          "name": "Bulk Import Members — JSON (only for superadmin)",
           "request": {
             "method": "POST",
-            "url": "{{baseUrl}}/api/v1/tenant/onboard/import",
+            "url": "{{baseUrl}}/api/v1/platform-admin/tenants/{{platformTenantId}}/members/import",
             "header": [{ "key": "Content-Type", "value": "application/json" }],
             "body": {
               "mode": "raw",
               "raw": "{\n  \"members\": [\n    {\n      \"name\": \"Dr. Amit Verma\",\n      \"email\": \"amit.verma@college.edu\",\n      \"roleLevel\": \"MID\",\n      \"roleLabel\": \"HoD\",\n      \"departmentName\": \"Computer Science\",\n      \"canBroadcast\": true\n    }\n  ]\n}"
             },
-            "description": "TOP only. JSON alternative to Excel upload. Same idempotent upsert behaviour."
+            "description": "Only for superadmin. JSON alternative to Excel upload — any tenant via URL param. Same idempotent upsert behaviour."
           }
         }
       ]

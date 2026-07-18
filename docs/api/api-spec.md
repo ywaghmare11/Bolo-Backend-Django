@@ -11,7 +11,7 @@
 - REST over HTTPS
 - **Auth:** httpOnly JWT cookie set on login — browser sends it automatically. No `Authorization` header.
 - **Tenant scoping:** `tenantId` read exclusively from the JWT — never accepted in the request body.
-- **Timestamps:** ISO 8601 UTC (`2026-06-20T10:00:00Z`)
+- **Timestamps:** ISO 8601 IST, `+05:30` offset (`2026-06-20T15:30:00+05:30`) — **corrected 2026-07-12**, this previously said UTC (`Z`), but every repository (`TaskRepository` since inception, `StickyNoteRepository` as of 2026-07-12) actually stores wall-clock IST via `nowIST()`/serializes via `istLabel()`/`toIST()` (`src/utils/date.ts`), matching `TZ=Asia/Kolkata` and the India-first product. Doc was wrong, not the code.
 - **IDs:** UUIDs
 - **Pagination:** `?page=1&limit=20` — default limit 20, max 100
 - **RBAC middleware** on every route — no exceptions.
@@ -107,7 +107,7 @@ All responses produced by `successResponse()` / `failureResponse()` from `utils/
 | 422 | `EMAIL_UNDELIVERABLE` | SMTP RCPT TO probe confirmed recipient mailbox does not exist |
 | 429 | `RATE_LIMITED` | Too many requests (OTP: 1/60s; API: 100 req/min per user) |
 | 500 | `SERVER_ERROR` | Unexpected server error |
-| 502 | `EMAIL_DELIVERY_FAILED` | User exists in DB but SMTP send failed (transient — retry) |
+| 502 | `EMAIL_DELIVERY_FAILED` | User exists in DB but the SES send failed (transient — retry) |
 
 ---
 
@@ -117,7 +117,7 @@ No role middleware — these routes are public (pre-auth).
 
 ### POST /auth/request-otp
 
-Sends a 6-digit OTP to the user's email via SMTP. Upserts the OTP row (one active OTP per email). OTP is SHA-256 hashed before storing. Expires in 10 minutes. Max 3 verify attempts before lockout.
+Sends a 6-digit OTP to the user's email via AWS SES. Upserts the OTP row (one active OTP per email). OTP is SHA-256 hashed before storing. Expires in 10 minutes. Max 3 verify attempts before lockout.
 
 A pre-send SMTP RCPT TO probe is run against the recipient's MX server — domains/mailboxes that reject at SMTP level return 422 immediately. Gmail and providers that accept-then-bounce are undetectable synchronously.
 
@@ -220,7 +220,7 @@ Response 200:
       "assignerName": "Dr. Kamal Sethi",
       "assigneeId": "uuid",
       "assigneeName": "Prof. Asha Nair",
-      "projectLabelId": "uuid",
+      "mainLabelId": "uuid",
       "projectLabelName": "NAAC",
       "subtaskCount": 3,
       "doneSubtaskCount": 1,
@@ -290,7 +290,7 @@ Response 200:
     "assignerName": "Dr. Kamal Sethi",
     "assigneeId": "uuid",
     "assigneeName": "Prof. Asha Nair",
-    "projectLabelId": "uuid",
+    "mainLabelId": "uuid",
     "projectLabelName": "NAAC",
     "myPersonalLabels": ["urgent", "admin"],
     "subtasks": [
@@ -357,7 +357,7 @@ Request:
   "assigneeId": "uuid",                        // required
   "dueDate": "2026-06-30T17:00:00Z",          // required for Open; optional while saving Draft
   "priority": "P1",                            // optional — default: P3
-  "projectLabelId": "uuid",                    // optional — default: null
+  "mainLabelId": "uuid",                    // optional — default: null
   "description": "Include sections A1–C4.",   // optional — default: ""
 
   "voiceRecording": {                          // optional — only for voice-created tasks
@@ -413,7 +413,7 @@ Request (any subset — all optional):
   "assigneeId": "uuid",                  // only allowed if NO subtasks exist
   "dueDate": "2026-07-15T17:00:00Z",
   "priority": "P2",
-  "projectLabelId": "uuid",
+  "mainLabelId": "uuid",
   "description": "Updated scope."
 }
 // "title" is NOT patchable — returns 400 TITLE_IMMUTABLE if included
@@ -512,7 +512,7 @@ Response 200:
 
 ### POST /tasks/:id/remind — send reminder to assignee (assigner only)
 
-Fires a TASK_REMINDER notification to the assignee — **in-app + email** (email via the existing nodemailer/SMTP setup used for OTP). Implemented 2026-07-03: `remindTaskService` validates (assigner check, task status check), writes the `Notification` row via `NotificationRepository`, then sends `sendTaskReminderEmail` best-effort (failure is logged and swallowed, doesn't fail the request).
+Fires a TASK_REMINDER notification to the assignee — **in-app + email** (email via the existing AWS SES setup used for OTP). Implemented 2026-07-03: `remindTaskService` validates (assigner check, task status check), writes the `Notification` row via `NotificationRepository`, then sends `sendTaskReminderEmail` best-effort (failure is logged and swallowed, doesn't fail the request).
 
 **Access:** Caller must be `assignerId`. Task must be in `OPEN | IN_PROGRESS | OVERDUE` state.
 
@@ -560,7 +560,7 @@ Response 201:
 ```
 
 **Business rules enforced:**
-- If no `projectLabelId` is set on the subtask → server inherits parent task's `projectLabelId` silently.
+- If no `mainLabelId` is set on the subtask → server inherits parent task's `mainLabelId` silently.
 - Notification `SUBTASK_CREATED` fired to sub-assignee on creation.
 
 **Errors:** 400 (SUBTASK_DUE_DATE_INVALID · ASSIGNMENT_LOOP · VALIDATION_ERROR) · 401 · 403 · 404 · 500
@@ -884,111 +884,71 @@ Response 200:
 
 ---
 
-## 7. Personal Labels (Tier 2 — private per user)
+## 7. Labels
 
-Personal labels are **strictly private** — a user only ever sees their own labels on a task. Response must never leak another user's labels. Auto-complete suggestions come from `SELECT DISTINCT label WHERE userId = me`.
+A single `ProjectLabel` table serves both main labels (set by assigner on task) and assignee personal labels (set by assignee on task). Each user sees only labels they created (`createdBy = req.userId`). Labels cannot be deleted while applied to any task (`onDelete: Restrict`).
 
-### GET /tasks/:id/personal-labels — my labels on this task
+### GET /labels/shared — assigner's label picker
 
-**Access:** `requireAuth` + must be assigner or assignee.
+Returns all labels created by the calling user. Used when the assigner sets or changes the main label on a task.
 
-```json
-Response 200:
-{ "data": [
-  { "id": "uuid", "label": "urgent", "colorCode": "#EF4444", "description": null },
-  { "id": "uuid", "label": "admin", "colorCode": "#6B7280", "description": "Needs paperwork" }
-] }
-```
-
----
-
-### POST /tasks/:id/personal-labels — add a personal label
-
-**Access:** `requireAuth` + must be assigner or assignee.
-
-```json
-Request: { "label": "urgent", "colorCode": "#EF4444", "description": "Needs paperwork" }
-Response 201: { "data": { "id": "uuid", "label": "urgent", "colorCode": "#EF4444", "description": "Needs paperwork" }, "message": "Label added" }
-```
-
-`colorCode` and `description` are optional — default `#6B7280` / `null` if omitted (same defaults as `ProjectLabel`). `colorCode` must be a valid 6-digit hex (`#RRGGBB`) when provided.
-
-**Errors:** 400 (empty label · malformed colorCode · duplicate label on this task for this user) · 401 · 403 · 404 · 500
-
----
-
-### GET /personal-labels/suggestions — autocomplete from past labels
-
-Returns distinct labels the calling user has used across all tasks — for autocomplete dropdown.
-
-```json
-Response 200: { "data": ["urgent", "admin", "follow-up", "client"] }
-```
-
----
-
-### DELETE /tasks/:id/personal-labels/:lid
-
-**Access:** Owner of the label only (`userId = me`).
-
-```json
-Response 200: { "data": null, "message": "Label removed" }
-```
-
----
-
-## 8. Project Labels (Tier 1 — shared Main Labels)
-
-Tenant-scoped. Visible to all tenant members. Assigner sets `projectLabelId` on a task.
-
-### GET /project-labels
-
-**Access:** `requireAuth` — any tenant member.
+**Access:** `requireAuth`
 
 ```json
 Response 200:
-{ "data": [ { "id": "uuid", "name": "NAAC", "colorCode": "#EF4444", "description": "NAAC/NBA related tasks", "createdBy": "uuid", "createdByName": "Dean", "createdAt": "..." } ] }
+{ "data": [ { "id": "uuid", "name": "NAAC", "colorCode": "#6B7280", "createdAt": "..." } ] }
 ```
 
 ---
 
-### POST /project-labels
+### GET /labels/mine — assignee's label picker
 
-**Access:** `requireAuth` — any tenant member. Name must be unique within tenant.
+Returns all labels created by the calling user. Used when the assignee sets their personal label on a task.
+
+**Access:** `requireAuth`
 
 ```json
-Request: { "name": "NAAC", "colorCode": "#EF4444", "description": "NAAC/NBA related tasks" }
-Response 201: { "data": { "id": "uuid", "name": "NAAC", "colorCode": "#EF4444", "description": "NAAC/NBA related tasks", "tenantId": "uuid" }, "message": "Label created" }
+Response 200:
+{ "data": [ { "id": "uuid", "name": "urgent", "colorCode": "#6B7280", "createdAt": "..." } ] }
 ```
-
-`colorCode` — optional, 6-digit hex (`#RRGGBB`); defaults to `#6B7280` if omitted. `description` — optional free text; defaults to `null`.
-
-**Errors:** 400 (empty name · duplicate name in tenant · invalid `colorCode` format) · 401 · 500
 
 ---
 
-### PATCH /project-labels/:id — rename / recolor / redescribe
+### POST /labels — create a label
 
-**Access:** Creator of the label only. Partial update — at least one of `name`, `colorCode`, `description` required.
+**Access:** `requireAuth`. Label name must be unique per user (not per tenant).
 
 ```json
-Request: { "name": "NAAC Prep", "colorCode": "#10B981", "description": "Updated scope" }
-Response 200: { "data": { "id": "uuid", "name": "NAAC Prep", "colorCode": "#10B981", "description": "Updated scope" }, "message": "Label updated" }
+Request: { "name": "NAAC", "colorCode": "#6B7280" }
+Response 201: { "data": { "id": "uuid", "name": "NAAC", "colorCode": "#6B7280" }, "message": "Label created" }
 ```
 
-**Errors:** 400 (no fields provided · empty name · invalid `colorCode` format · duplicate name in tenant) · 401 · 403 · 404 · 500
+**Errors:** 400 (empty name · duplicate name for this user) · 401 · 500
 
 ---
 
-### DELETE /project-labels/:id
+### PATCH /labels/:id — rename a label
 
-**Access:** Creator of the label only. Fails if any active task uses this label (set `projectLabelId = null` on those tasks first, or unset from task before deleting label).
+**Access:** Creator of the label only (`createdBy = req.userId`).
+
+```json
+Request: { "name": "NAAC Prep", "colorCode": "#3B82F6" }
+Response 200: { "data": { "id": "uuid", "name": "NAAC Prep" }, "message": "Label updated" }
+```
+
+**Errors:** 400 (no fields provided · empty name · invalid `colorCode` format · duplicate name for this user) · 401 · 403 · 404 · 500
+
+---
+
+### DELETE /labels/:id
+
+**Access:** Creator of the label only. **Fails if label is currently set as `mainLabelId` or `assigneeLabelId` on any task** — unset from the task first.
 
 ```json
 Response 200: { "data": null, "message": "Label deleted" }
 ```
 
-**Errors:** 400 (label in use) · 401 · 403 · 404 · 500
+**Errors:** 400 (LABEL_IN_USE) · 401 · 403 · 404 · 500
 
 ---
 
@@ -1040,6 +1000,17 @@ Response 201:
 
 ---
 
+### GET /sticky-notes/:id
+
+**Access:** Owner only (`userId = me`); 404 if not found or not owned.
+
+```json
+Response 200:
+{ "data": { "id": "uuid", "text": "...", "dueAt": "...", "isPinned": false, "promotedToTaskId": null, "createdAt": "...", "updatedAt": "..." } }
+```
+
+---
+
 ### PATCH /sticky-notes/:id
 
 **Access:** Owner only (`userId = me`).
@@ -1073,7 +1044,7 @@ Creates a new Task from the sticky note's text (as title). Sets `StickyNote.prom
 ```json
 Request:
 {
-  "assigneeId": "uuid",               // optional — leave blank to save as Draft
+  "assigneeId": "uuid",               // required — see note below
   "dueDate": "2026-06-30T17:00:00Z"  // optional — leave blank to save as Draft
 }
 
@@ -1081,17 +1052,21 @@ Response 201:
 {
   "data": {
     "taskId": "uuid",
-    "status": "OPEN"    // or "DRAFT" if assigneeId/dueDate missing
+    "status": "OPEN"    // or "DRAFT" if dueDate missing
   },
   "message": "Promoted to task"
 }
 ```
+
+> **Corrected 2026-07-11:** this section previously documented `assigneeId` as optional ("leave blank to save as Draft"), matching W-C3's general rule that Drafts can omit any field. In practice `Task.assigneeId` is a required, non-nullable column (`schema.prisma`), and `createTask.service.ts` already enforces it as required for every task, not just at the Draft→Open transition — a pre-existing gap between the resolved PRD rule and the implementation, not introduced here. `promoteStickyNote.service.ts` follows that same existing constraint for consistency rather than diverging from it. See `open-questions-web-v1.md` for the flagged contradiction.
 
 **Errors:** 400 (already promoted — `promotedToTaskId` not null) · 401 · 403 · 500
 
 ---
 
 ## 10. Broadcast Notices
+
+**Implementation status (2026-07-12):** CRUD + publish + list + ack + ack-count are built (`bolo-backend/src/routes/broadcast-notices.routes.ts`). The two image endpoints below (`POST /upload/broadcast-image-presign`, `POST /broadcast-notices/:id/image`) are **not yet implemented** — this backend has no S3/presign client wired anywhere yet (same gap blocks task-evidence upload; see the commented-out `uploadRoutes` import in `routes/index.ts`). Contract stays documented here for when that infra lands. Server-side HTML re-sanitization uses a small in-repo safelist sanitizer (`utils/htmlSanitize.ts`), not a library — fine for TipTap's current tag set, revisit if the editor's allowed marks grow.
 
 ### Permissions recap:
 - `canBroadcast` on `TenantMembership` gates creation — 403 if false.
@@ -1152,14 +1127,29 @@ Response 200:
 
 ---
 
-### GET /broadcast-notices — notices visible to me
+### GET /broadcast-notices?view=received|sent — notices visible to me / sent by me
 
-Returns active (non-expired) broadcasts where the audience matches the calling user's dept + roleLevel.
+```
+GET /api/v1/broadcast-notices?view=received&page=1&limit=20   (default — same as omitting ?view entirely)
+GET /api/v1/broadcast-notices?view=sent&page=1&limit=20
+```
 
-**Access:** `requireAuth`.
+| Param | Required | Values | Default |
+|---|---|---|---|
+| `view` | no | `received` \| `sent` | `received` |
+| `page` | no | integer ≥ 1 | `1` |
+| `limit` | no | 1–100 | `20` |
+
+**View → filter logic** (added 2026-07-14, W97 — see `open-questions-web-v1.md` §21):
+- `received` (default) — active (`PUBLISHED`, non-expired) broadcasts where the audience matches the calling user's own dept + roleLevel. **A sender does NOT automatically see their own broadcast here** unless they also happen to match their own audience scope (e.g. a Dean broadcasting to HoDs never sees it in `received`, since the Dean is `TOP` not `MID`).
+- `sent` — everything `senderId = me` created, **any** status (`DRAFT` + `PUBLISHED`, including expired) — the sender's own management view, so they can see/edit drafts and check on what they've published regardless of whether they're in its audience. Rows omit `hasAcknowledged` (not meaningful for your own sent item) but still include `ackCount`.
+
+**Access:** `requireAuth`. Invalid `view` value, or `page`/`limit` out of range → 400 `VALIDATION_ERROR`.
+
+**Pagination added 2026-07-14** — the endpoint previously ignored `page`/`limit` entirely and always returned every matching row unpaginated (the Postman collection had sent these params since before this feature existed, silently ignored). Now real, matching `GET /notifications`' `page`/`limit` convention exactly (`PaginatedResponse<T>` shape, max `limit` 100).
 
 ```json
-Response 200:
+Response 200 (view=received):
 {
   "data": [
     {
@@ -1178,9 +1168,12 @@ Response 200:
       "expiresAt": "2026-06-21T10:00:00Z",
       "createdAt": "2026-06-20T10:00:00Z"
     }
-  ]
+  ],
+  "pagination": { "page": 1, "limit": 20, "total": 12 }
 }
 ```
+
+`view=sent` returns the same shape minus `hasAcknowledged`, and includes `DRAFT` rows (`expiresAt: null`) alongside `PUBLISHED` ones.
 
 ---
 
@@ -1210,6 +1203,8 @@ Response 201:
   "message": "Draft saved"
 }
 ```
+
+**Errors:** 400 (VALIDATION_ERROR — missing `messageJson`/`messageHtml`, or text over the char limit; `INVALID_DEPARTMENT` — `audienceDeptId` doesn't exist in the caller's tenant, corrected 2026-07-13, found via manual API testing: the server previously passed it straight to Prisma and a bad value threw an unhandled 500 instead of a clean 400) · 401 · 403 (BROADCAST_NOT_PERMITTED) · 500
 
 ---
 
@@ -1257,7 +1252,7 @@ Response 200:
 { "data": { "id": "uuid", "status": "DRAFT" }, "message": "Draft updated" }
 ```
 
-**Errors:** 400 (cannot edit PUBLISHED broadcast) · 401 · 403 · 404 · 500
+**Errors:** 400 (CANNOT_EDIT_PUBLISHED · `INVALID_DEPARTMENT` if `audienceDeptId` doesn't exist in the caller's tenant, same check/fix as create above) · 401 · 403 · 404 · 500
 
 ---
 
@@ -1275,14 +1270,14 @@ Response 200: { "data": null, "message": "Broadcast deleted" }
 
 Inserts a `BroadcastAcknowledgement` row. Composite PK `(broadcastId, userId)` prevents duplicates at DB level.
 
-**Access:** `requireAuth`. Broadcast must be `PUBLISHED` and not expired. `requiresAcknowledgement` must be true.
+**Access:** `requireAuth`. Broadcast must be `PUBLISHED` and not expired. `requiresAcknowledgement` must be true. **Caller must be in the broadcast's audience** (own `dept`+`roleLevel` match `audienceDeptId`/`audienceRoleLevel`, same match rule as `GET /broadcast-notices` — corrected 2026-07-13, W96) — 403 otherwise. This includes the sender: they can only ack their own broadcast if they'd also see it in their own feed.
 
 ```json
 Response 200:
 { "data": { "ackCount": 13 }, "message": "Acknowledged" }
 ```
 
-**Errors:** 400 (not a requiring-ack broadcast · expired) · 401 · 404 · 409 (ALREADY_ACKNOWLEDGED) · 500
+**Errors:** 400 (not a requiring-ack broadcast · expired) · 401 · 403 (`NOT_IN_AUDIENCE`) · 404 · 409 (ALREADY_ACKNOWLEDGED) · 500
 
 ---
 
@@ -1301,7 +1296,7 @@ Response 200:
 
 ## 11. Notifications
 
-All types write an in-app `Notification` row; client polls on a configurable interval (no WebSocket/SSE in V1). System-generated only — no user-created notifications. **Corrected 2026-07-03:** reminder/due-date types also send email (via the existing nodemailer/SMTP setup used for OTP) — see Channel column below. Previously documented as in-app only across the board; that was wrong for these 2 types.
+All types write an in-app `Notification` row; client polls on a configurable interval (no WebSocket/SSE in V1). System-generated only — no user-created notifications. **Corrected 2026-07-03:** reminder/due-date types also send email (via the existing AWS SES setup used for OTP, transport decided 2026-07-18) — see Channel column below. Previously documented as in-app only across the board; that was wrong for these 2 types.
 
 ### Notification types
 
@@ -1327,8 +1322,8 @@ All types write an in-app `Notification` row; client polls on a configurable int
 | `SUBTASK_DONE_D` | Assigner marks subtask done-d; fires to assignee | In-app |
 | `BROADCAST_POSTED` | Broadcast published; fires to audience | In-app |
 | `REMINDER_FIRED` | EventBridge: StickyNote.dueAt reached; fires once to note owner (one-shot) | In-app |
-| `AI_NUDGE_FOLLOWUP` | Sweep (every 6h, no office-hours gate): 5 conditions on Task/Subtask — not-yet-accepted, accepted-no-progress, unanswered-comment, `DONE_A` awaiting `DONE_D`, all-subtasks-done-parent-open. Recipient varies per condition (assignee or assigner). No cap, no escalation — skip counter tracked for visibility only. | In-app |
-| `AI_NUDGE_DUE_PROXIMITY` | Sweep (every 3h, no office-hours gate): polymorphic across **Task, Subtask, StickyNote, and Broadcast**. Task/Subtask: already-accepted + due-today-or-overdue only (unaccepted overdue tasks are `AI_NUDGE_FOLLOWUP`'s territory instead); cap 3 due-today / 1 overdue; escalates once to assigner if cap reached and still not `DONE_A`. StickyNote: no cap, no escalation, self-limits at day-end. Broadcast: cap 3, enforcement only (no escalation target), self-limits at the broadcast's 1-day expiry. | In-app only, **except** the **one-time** Task/Subtask escalation-to-assigner moment → **in-app + email**, never repeated (`NudgeSkipCounter.escalatedAt` guard) |
+| `AI_NUDGE_FOLLOWUP` | Sweep (every 6h, no office-hours gate). **Scope narrowed 2026-07-13 (client-directed):** 2 conditions only, both **assignee-only** — accepted-no-progress, and unanswered-comment (only when the assignee owes the reply; if the assignee posted last and is waiting on the assigner, no nudge fires — the assigner is out of scope entirely). The 3 conditions requiring Accept/Mark Complete actions were dropped, not just their buttons. No cap, no escalation — skip counter tracked for visibility + rotation only. | In-app |
+| `AI_NUDGE_DUE_PROXIMITY` | Sweep (every 3h, no office-hours gate). **Task only** (Subtask/StickyNote/Broadcast dropped 2026-07-13 — a Subtask is no longer distinguished from Task). Already-accepted + due-today-or-overdue only; cap 3 due-today / 1 overdue; escalates once to assigner if cap reached and still not `DONE_A`. **No blocking** — Skip is never disabled at cap, panel is never forced closed; cap only drives the real one-time escalation, not any UI restriction. | In-app only, **except** the **one-time** escalation-to-assigner moment → **in-app + email**, never repeated (`NudgeSkipCounter.escalatedAt` guard) |
 
 `AI_NUDGE_PERIODIC` was retired 2026-07-06 — merged into `AI_NUDGE_FOLLOWUP` once Follow-up gained per-condition action buttons and lost its own cap, leaving no structural difference between the two. Removed from the `NotificationType` enum entirely (not just deprecated) as of the Phase 1 backend build.
 
@@ -1344,7 +1339,7 @@ All types write an in-app `Notification` row; client polls on a configurable int
 GET /api/v1/nudges
 ```
 
-No query params — always returns every unresolved `AI_NUDGE_FOLLOWUP`/`AI_NUDGE_DUE_PROXIMITY` notification for the caller. Type/Entity filtering happens client-side (see `docs/ux/design-system.md`).
+No query params. **Scope narrowed 2026-07-13:** returns **at most 5 items total**, not everything eligible — Due-Proximity fills first (ordered by `Task.priority`, P1 highest), then Follow-up fills any remaining slots (also priority-ordered, tiebroken by oldest-`lastShownAt`-first for fair rotation across candidates that don't all fit). Deduped by `(entityId, type)` — if the sweep left multiple unread notifications for the same task+type behind, only the newest counts toward a slot; older duplicates are silently marked read.
 
 **Every row is re-validated against current entity state on every call — never trusts what was true when the notification originally fired.** If the underlying condition no longer holds (e.g. the task was accepted through Task Detail instead of the nudge panel), the notification is auto-marked-read server-side and silently excluded from the response — it won't linger as a stale row.
 
@@ -1369,7 +1364,7 @@ Response 200:
 }
 ```
 
-`entityType` is `"task"` | `"subtask"` | `"sticky_note"` | `"broadcast"` (a Subtask is a Task row with `parentTaskId` set — same table, distinguished here so the UI's Task/Subtask filter and icon both work). `skipCap: null` = uncapped (Follow-up, StickyNote due-proximity) — `skipCount` still tracked, never enforced. `escalation` only ever present for Task/Subtask due-proximity.
+`entityType` is always `"task"` now (Subtask/StickyNote/Broadcast dropped 2026-07-13 — a Subtask is no longer distinguished from Task at all). `skipCap: null` = uncapped (Follow-up) — `skipCount` still tracked, never enforced. `escalation` only ever present for Due-Proximity. `actions` is `["ADD_COMMENT"]` for Follow-up or `["ADD_COMMENT", "OPEN_TASK"]` for Due-Proximity — `ACCEPT_TASK`/`MARK_COMPLETE`/`VIEW_BROADCAST` are no longer emitted by anything.
 
 ---
 
@@ -1377,24 +1372,22 @@ Response 200:
 
 **Access:** `requireAuth` — only the caller's own nudge.
 
-Increments the caller's skip counter for that `(entityType, entityId, nudgeKind)` and marks the notification read (resolved until the next sweep cycle re-fires it, if still applicable). Uncapped types (`skipCap: null`) always succeed. Capped types reject with `409 SKIP_CAP_REACHED` if already at last-chance (`skipCount >= skipCap - 1`) — mirrors the frontend's own last-chance rule (which already hides the Skip button at that point), enforced again server-side so a stale client can't bypass it.
+Increments the caller's skip counter for that `(entityType, entityId, nudgeKind)` and marks the notification read (resolved until the next sweep cycle re-fires it, if still applicable). **Always succeeds now (2026-07-13) — no cap rejection.** Skip is never blocked in the UI even past the Due-Proximity cap; the cap still drives the one-time escalation server-side (see `AI_NUDGE_DUE_PROXIMITY` above), it just no longer restricts what the user can click.
 
 ```json
 Response 200: { "skipCount": 2 }
-Response 409: { "success": false, "error": "This nudge is at its last chance and can no longer be skipped", "errorCode": "SKIP_CAP_REACHED" }
 ```
 
 ---
 
-### POST /nudges/skip-all — bulk-skip everything skippable
+### POST /nudges/skip-all — bulk-skip everything currently shown
 
 **Access:** `requireAuth` — only the caller's own feed.
 
-Mirrors the frontend's Skip All disable rule: if **any** item in the caller's current feed is at last-chance, the whole batch is rejected (`409 LAST_CHANCE_BLOCKING`) rather than partially skipping — that one item needs individual resolution first. Otherwise skips every item in one pass.
+**No last-chance rejection (2026-07-13)** — skips everything currently in the caller's feed in one pass, always succeeds. The earlier "reject the whole batch if anything is at last-chance" rule was tied to the blocking-panel behavior, which was removed along with it.
 
 ```json
 Response 200: { "skippedCount": 4 }
-Response 409: { "success": false, "error": "Resolve the last-chance item(s) individually before using Skip All", "errorCode": "LAST_CHANCE_BLOCKING" }
 ```
 
 ---
@@ -1474,66 +1467,13 @@ Response 200:
 
 ---
 
-### GET /nudges, POST /nudges/:id/skip, POST /nudges/skip-all — AI Nudge feed (2026-07-06 redesign)
-
-**Added 2026-07-06, merged to `bolo-backend` `feature/ai-nudge` 2026-07-09.** Supersedes the "fetch `/notifications?type=AI_NUDGE_*` and split client-side into Screen A/B" approach described above (rows 1293-1295) — that plan predates this dedicated endpoint. The AI Nudge UI (`bolo-web`, one-at-a-time "Today's Check-in" carousel, no Figma reference — W79) is built against this feed, not `/notifications` directly.
-
-**Access:** all three `requireAuth`, scoped to `recipientId = me`.
-
-```
-GET /api/v1/nudges
-```
-Re-validates each pending `AI_NUDGE_FOLLOWUP`/`AI_NUDGE_DUE_PROXIMITY` notification against **current** state (never trusts what was true when it originally fired) — auto-marks-read anything that no longer qualifies.
-
-```json
-Response 200:
-{
-  "data": [
-    {
-      "id": "uuid",
-      "nudgeType": "FOLLOWUP",
-      "entityType": "task",
-      "entityId": "uuid",
-      "title": "AQAR Draft Preparation",
-      "subtitle": "accepted but no progress update since",
-      "actions": ["ADD_COMMENT"],
-      "skipCount": 0,
-      "skipCap": null,
-      "createdAt": "2026-07-09T10:00:00Z"
-    }
-  ]
-}
-```
-- `entityType`: `"task" | "subtask" | "sticky_note" | "broadcast"`.
-- `actions`: drives which buttons the client renders — `ACCEPT_TASK`, `ADD_COMMENT`, `MARK_COMPLETE`, `OPEN_TASK`, `VIEW_BROADCAST`. **Resolving a nudge is never a dedicated call** — the client performs the real underlying action via the existing Task/Comment endpoints (§ this doc), and the item naturally drops off the next `GET /nudges` poll.
-- `skipCap: null` = uncapped (all Follow-up conditions, StickyNote due-proximity). Capped types: Task/Subtask due-proximity (3 due-today / 1 overdue), Broadcast due-proximity (3).
-- `escalation: { toName }` present only for capped Task/Subtask items with an assigner.
-
-```
-POST /api/v1/nudges/:id/skip
-```
-**Reverses W77's original resolution** (`open-questions-web-v1.md`, see W85) — Skip is a real user action again, not purely a backend-sweep side effect. Increments the nudge's skip counter. Returns `409 SKIP_CAP_REACHED` if `skipCount >= skipCap - 1` already (client must hide the Skip button at that same threshold — see `isLastChanceNudge` in `bolo-web/src/types/nudge.ts`).
-```json
-Response 200: { "data": { "skipCount": 2 } }
-```
-
-```
-POST /api/v1/nudges/skip-all
-```
-Skips every currently-pending nudge for the caller in one call. Rejects with `409 LAST_CHANCE_BLOCKING` if anything is at last-chance (mirrors the same client-side disable rule). **Not currently wired in `bolo-web`** — the one-at-a-time carousel UI has no bulk "Skip All" affordance (descoped 2026-07-11, see changelog.md).
-```json
-Response 200: { "data": { "skippedCount": 4 } }
-```
-
----
-
 ## 12. Audit Log
 
 Immutable append-only log. No UPDATE or DELETE on `audit_logs`. Used for compliance and traceability.
 
 ### GET /audit-log
 
-**Access:** `requireOrgRole(['TOP'])` OR `assignerId` of the entity (checked in service). Scoped to `tenantId` from JWT.
+**Access:** `requireOrgRole(['TOP'])` OR `assignerId` of the entity (checked in service). Scoped to `tenantId` from JWT. `entityType=TENANT`/`DOCUMENT` rows (platform-admin actions; evidence upload/delete, added 2026-07-18) are TOP-only for now — neither a Tenant nor an Evidence row has assigner resolution wired (`findEntityAssignerId()` only resolves TASK).
 
 ```
 GET /api/v1/audit-log?entityType=TASK&entityId=uuid&page=1&limit=50
@@ -1541,7 +1481,7 @@ GET /api/v1/audit-log?entityType=TASK&entityId=uuid&page=1&limit=50
 
 | Param | Required | Values |
 |---|---|---|
-| `entityType` | no | `TASK` \| `BROADCAST` \| `USER` \| `STICKY_NOTE` \| `PROJECT_LABEL` |
+| `entityType` | no | `TASK` \| `BROADCAST` \| `USER` \| `STICKY_NOTE` \| `PROJECT_LABEL` \| `TENANT` \| `DOCUMENT` |
 | `entityId` | no | UUID |
 | `actorId` | no | UUID |
 | `from` | no | ISO 8601 date |
@@ -1567,6 +1507,8 @@ Response 200:
   "pagination": { "page": 1, "limit": 50, "total": 23 }
 }
 ```
+
+`actorType` is `USER` \| `SYSTEM` \| `PLATFORM_ADMIN` (added 2026-07-17). For `PLATFORM_ADMIN` rows, `actorId`/`actorName` are always `null` — a `PlatformAdmin` isn't a `User` row, so there's no `AuditLog.actorId` FK target for one.
 
 **Errors:** 401 · 403 · 500
 
@@ -2240,8 +2182,7 @@ Response 200:
 | POST /upload/presign | requireAuth | none | service: assigner or assignee |
 | POST /tasks/:id/evidence | requireAuth | none | service: assigner or assignee |
 | DELETE /tasks/:id/evidence/:eid | requireAuth | none | service: uploaderId or assignerId |
-| GET/POST/DELETE /tasks/:id/personal-labels | requireAuth | none | service: assigner or assignee; response filtered to userId |
-| GET/POST/PATCH/DELETE /project-labels | requireAuth | none | POST: any; PATCH/DELETE: creatorId |
+| GET/POST/PATCH/DELETE /labels | requireAuth | none | POST: any; PATCH/DELETE: creatorId |
 | GET/POST/PATCH /sticky-notes | requireAuth | none | service: userId = me |
 | POST /sticky-notes/:id/promote | requireAuth | none | service: userId = me |
 | GET /broadcast-notices | requireAuth | none | audience match in service |

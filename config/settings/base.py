@@ -49,6 +49,12 @@ MIDDLEWARE = [
     "django.contrib.auth.middleware.AuthenticationMiddleware",
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
+    # Last -- generic audit-log observer (CLAUDE.md Architecture Rules point 8). Does
+    # its own URL resolution against apps.common.audit_route_config.AUDIT_ROUTE_CONFIG
+    # rather than reading DRF-specific request attributes (request.tenant_id/request.user
+    # are set on DRF's internal Request wrapper inside APIView.dispatch(), not on the
+    # underlying HttpRequest this middleware sees -- they never propagate back out here).
+    "apps.common.audit_middleware.AuditLogMiddleware",
 ]
 
 ROOT_URLCONF = "config.urls"
@@ -138,6 +144,17 @@ CACHES = {
         "OPTIONS": {"CLIENT_CLASS": "django_redis.client.DefaultClient"},
     },
 }
+
+# Celery -- shares the same Redis instance as CACHES above (broker + result backend).
+# Used today for the fire-and-forget audit-log write (apps/common/audit_middleware.py);
+# CELERY_TASK_ALWAYS_EAGER lets config/settings/test.py run tasks synchronously so tests
+# don't need a running worker.
+CELERY_BROKER_URL = env("REDIS_URL")
+CELERY_RESULT_BACKEND = env("REDIS_URL")
+CELERY_ACCEPT_CONTENT = ["json"]
+CELERY_TASK_SERIALIZER = "json"
+CELERY_RESULT_SERIALIZER = "json"
+CELERY_TASK_ALWAYS_EAGER = env.bool("CELERY_TASK_ALWAYS_EAGER", default=False)
 
 SIMPLE_JWT = {
     "ACCESS_TOKEN_LIFETIME": timedelta(minutes=15),

@@ -3,6 +3,11 @@ djangorestframework==3.17.1
 djangorestframework-simplejwt==5.5.1
 psycopg[binary]==3.3.4
 django-environ==0.14.0
-redis==8.0.1
+# redis 8.x defaults its connection protocol to RESP3 (sends a HELLO handshake), which
+# only Redis 6+ speaks -- pinned to 5.2.1 here since it's RESP2-only, no HELLO handshake,
+# and celery/kombu's redis transport has no way to pass a protocol override through its
+# own URL parsing (django-redis does, kombu doesn't). RESP2 is a strict subset every
+# Redis version speaks, so this is a safe pin even against a newer Redis in prod.
+redis==5.2.1
 django-redis==7.0.0
 celery==5.6.3

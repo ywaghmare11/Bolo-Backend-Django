@@ -228,10 +228,10 @@ model Department {
   createdAt  DateTime @default(now())
   updatedAt  DateTime @updatedAt
 
-  tenant      Tenant             @relation(fields: [tenantId], references: [id])
-  head        User?              @relation("DeptHead", fields: [headUserId], references: [id])
-  memberships TenantMembership[]
-  broadcasts  BroadcastNotice[]  @relation("BroadcastAudienceDept")
+  tenant             Tenant                        @relation(fields: [tenantId], references: [id])
+  head               User?                         @relation("DeptHead", fields: [headUserId], references: [id])
+  memberships        TenantMembership[]
+  broadcastAudiences BroadcastNoticeAudienceDept[]
 
   @@index([tenantId])
   @@index([headUserId])
@@ -358,6 +358,7 @@ model VoiceRecording {
   durationSecs    Float?
   confidenceScore Float?
   audioUrl        String?
+  carryVoiceRecording Boolean @default(false)
   createdAt       DateTime @default(now())
 
   tenant Tenant @relation(fields: [tenantId], references: [id])
@@ -437,7 +438,6 @@ model BroadcastNotice {
   messageJson             Json
   messageHtml             String
   status                  BroadcastStatus @default(DRAFT)
-  audienceDeptId          String?
   audienceRoleLevel       OrgRoleLevel?
   requiresAcknowledgement Boolean         @default(false)
   imageUrl                String?
@@ -445,16 +445,32 @@ model BroadcastNotice {
   createdAt               DateTime        @default(now())
   updatedAt               DateTime        @updatedAt
 
-  tenant           Tenant                     @relation(fields: [tenantId], references: [id])
-  sender           User                       @relation("BroadcastSender", fields: [senderId], references: [id])
-  audienceDept     Department?                @relation("BroadcastAudienceDept", fields: [audienceDeptId], references: [id])
+  tenant           Tenant                        @relation(fields: [tenantId], references: [id])
+  sender           User                          @relation("BroadcastSender", fields: [senderId], references: [id])
+  audienceDepts    BroadcastNoticeAudienceDept[]
   acknowledgements BroadcastAcknowledgement[]
 
   @@index([tenantId])
   @@index([senderId])
-  @@index([audienceDeptId])
   @@index([expiresAt])
   @@map("broadcast_notices")
+}
+
+// A DRAFT/PUBLISHED notice can target multiple departments at once (e.g. "Computer Science" +
+// "Civil Engineering" only) — join table instead of a single audienceDeptId FK. No specific
+// department rows for a notice means "not department-restricted" (all departments), same
+// semantics the old nullable audienceDeptId had for null.
+model BroadcastNoticeAudienceDept {
+  broadcastId String
+  deptId      String
+
+  broadcast  BroadcastNotice @relation(fields: [broadcastId], references: [id], onDelete: Cascade)
+  department Department      @relation(fields: [deptId], references: [id])
+
+  @@id([broadcastId, deptId])
+  @@index([broadcastId])
+  @@index([deptId])
+  @@map("broadcast_notice_audience_depts")
 }
 
 // ─── BroadcastAcknowledgement ─────────────────────────────────────────────────

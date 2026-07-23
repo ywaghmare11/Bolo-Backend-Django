@@ -1,8 +1,8 @@
 # BOLO Web PRD v1.0 — Open Questions & Decisions Tracker
 
-**Version:** 1.5
+**Version:** 1.6
 **Source PRD:** `Doc/BOLO_Web_PRD_v1.pdf` · **Source sheet:** `Doc/BOLO_Web_PRD_OpenQuestions.xlsx` + client Google Sheet (Rhushabh's answers, round 2) + client's direct V1 scope-down text (rounds 3 & 4)
-**Created:** 2026-06-06 | **Last updated:** 2026-06-17 — round 4: resolved W66/W67/W68 (voice CRUD scope = all 5 entities, mandatory confirm-before-delete, flow diagrams built into `diagrams.html` §9–10); clarified W20 is dev discretion, not a contradiction; clarified W16 is "client needs to review Rhushabh's answer first," not a rejection of it.
+**Created:** 2026-06-06 | **Last updated:** 2026-07-21 — §22 added: W102–W109, accepted voice-command scope limitations surfaced while building the voice command manual test plan (`docs/engineering/testing-strategy.md`). Previous update 2026-06-17 (round 4): resolved W66/W67/W68 (voice CRUD scope = all 5 entities, mandatory confirm-before-delete, flow diagrams built into `diagrams.html` §9–10); clarified W20 is dev discretion, not a contradiction; clarified W16 is "client needs to review Rhushabh's answer first," not a rejection of it.
 **Status:** Almost all items resolved. Genuinely open: **W15** (task card fields — pull from Figma), **W43** (voice privacy — low priority), **W60** (billing UI/flow), **W64** (readiness indicators), **W65** (routing approach). See **🚩 Major Flags** and **Critical Gaps** near the end. **W63 resolved (2026-06-20):** Audit log is in V1 scope — full AuditLog table in schema V1.1. **W100 resolved (2026-07-16):** transactional email is AWS SES, client-confirmed.
 
 > This file is specific to the Web MVP (v1.0).
@@ -352,6 +352,23 @@ Direct follow-on from W96: once acknowledging was correctly restricted to audien
 
 ---
 
+## Section 22 — Voice Command Known Limitations (found 2026-07-21)
+
+Building the full voice command manual test plan (`docs/engineering/testing-strategy.md`) surfaced several accepted, non-blocking scope limitations — recorded here rather than left as tribal knowledge, since none of them are bugs but all of them are worth a future developer knowing about before "fixing" them.
+
+| # | Question | Status |
+|---|---|---|
+| **W102** | `deterministicFallback()` (used when `OPENAI_API_KEY` is missing/down) doesn't recognize any of the newer intents added past the original 10. Should it be kept in parity with the GPT prompt? | ✅ **Accepted — not kept in parity.** Only matters if the API key is missing/down; the GPT path covers everything in the test plan. Revisit only if outages become frequent enough to matter. |
+| **W103** | The ambiguous-assignee picker (e.g. two users both named "Priya") shows the full org directory rather than a pre-filtered shortlist of just the colliding names. Worth narrowing? | ✅ **Accepted as-is.** Still never guesses wrong between homonyms — just more scrolling than an ideal pre-filtered list. Low priority polish item. |
+| **W104** | Compound ambiguity — a `task_update` command with both an ambiguous task title *and* an ambiguous label in the same sentence — silently drops the label change after the task is picked. Fix now or accept? | ✅ **Accepted — rare compound edge case.** Not expected to come up often enough to justify the added disambiguation-flow complexity right now. |
+| **W105** | "Assign it to myself, due today" spoken with zero surrounding context doesn't reliably resolve to `create_task` — the model reads "it" as referring to an already-open task. Needs a fix? | ✅ **Accepted — genuinely ambiguous in isolation, safely handled.** Caught by the `task_action` action-enum guard (changelog 2026-07-21 (4)) rather than misfiring. Real usage almost always has a preceding "create a task..." utterance establishing "it," so this hasn't been observed as a real-world problem. |
+| **W106** | Voice-deleting the task/comment/sticky/label currently on screen leaves that page in an error state (with retry) instead of auto-navigating away, even though the query cache is correctly invalidated. Should pages auto-redirect? | 🟡 **Open, low priority.** Not a crash, just a rough edge — no page currently reacts to "the thing I'm viewing no longer exists" by redirecting. Candidate for a future UX pass, not blocking. |
+| **W107** | "Search for X" (voice `filter_tasks` keyword) only matches task title + label, not description. Full-text-across-everything was the implied ask — worth a backend change? | ✅ **Accepted, scope note added to test plan.** The list endpoints (`AssignedToMe`/`DelegatedTasksPage`, both list-based, not detail-based) don't return `description` at all — searching it would need a backend response-shape change. Out of scope for the frontend-side filter fix that shipped; revisit if a backend change to the list endpoints happens for another reason. |
+| **W108** | "Cancel this task" always shows the subtask-cascade warning in the confirm dialog, even for tasks with zero subtasks. Should the dialog be made conditional? | ✅ **Accepted — truthful, just occasionally unneeded caution.** No subtask-count is threaded through voice context today (only id/title/due date are). Not incorrect, just occasionally more cautious than strictly necessary. |
+| **W109** | Two voice commands ("what's the weather"; "go to sticky wall") don't classify exactly as expected by category (`out_of_scope` instead of `unknown`; `filter_reminders` instead of `navigate`) despite two rounds of prompt tightening. Keep chasing, or accept? | ✅ **Accepted — no observable user-facing difference.** Both pairs produce an equally graceful outcome (a non-crashing decline message; the same `StickyWall` page) regardless of which of the two intents fires. Not chasing further. |
+
+---
+
 ## Critical Gaps (Still Blocking or Needing a Follow-up Conversation)
 
 | Priority | Gap | Why it's still open |
@@ -364,7 +381,8 @@ Direct follow-on from W96: once acknowledging was correctly restricted to audien
 | 🟢 | **W34** — Offline conflict resolution UI | Parked by client, and moot since V1 has no offline mode anyway. |
 | 🟢 | **W43** — Voice recording privacy/legal concerns | "Will check" — not an actual answer, low priority. |
 | 🟢 | **W10** — Max subtask count per parent | Still technically unanswered (client answered a different, related rule instead). |
+| 🟢 | **W106** — Voice-deleted entity leaves an error state on screen | Not a crash, cache invalidation works — just no page auto-redirects when the thing it's viewing no longer exists. Low priority UX polish. |
 
 ---
 
-*Last updated: 2026-06-17 (Rhushabh's answers from the client Google Sheet, round 2) | Next: incorporate the user's verbal PRD update notes, then update `docs/product/prd.md` and propagate confirmed changes into `domain-model.md` / `system-design.md` / `api-spec.md` / `schema.prisma` / `design-session.md`.*
+*Last updated: 2026-07-21 — §22 (voice command known limitations, W102–W109) added. Previous: 2026-06-17 (Rhushabh's answers from the client Google Sheet, round 2) | Next: incorporate the user's verbal PRD update notes, then update `docs/product/prd.md` and propagate confirmed changes into `domain-model.md` / `system-design.md` / `api-spec.md` / `schema.prisma` / `design-session.md`.*

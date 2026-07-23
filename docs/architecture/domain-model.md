@@ -281,7 +281,7 @@ A subtask is a **`Task` row with `parentTaskId` set** — shares every field, re
 | messageJson | JSON | ✅ | TipTap AST — restores editor state when re-opening a draft |
 | messageHtml | string | ✅ | Sanitized HTML — rendered in the broadcast feed |
 | status | enum | ✅ | `DRAFT` \| `PUBLISHED`; default `DRAFT` |
-| audienceDeptId | UUID | — | FK → Department; null = all departments |
+| audienceDepts | UUID[] | — | Via `BroadcastNoticeAudienceDept` join table (broadcastId, deptId — composite PK); can target multiple departments (e.g. Computer Science + Civil Engineering only); empty = all departments (2026-07-17: replaced the single nullable `audienceDeptId` FK) |
 | audienceRoleLevel | enum | — | `TOP` \| `MID` \| `EXECUTOR`; null = all role levels |
 | requiresAcknowledgement | boolean | ✅ | Default `false` |
 | imageUrl | string | — | Single image only. During DRAFT: stores S3 object key. At publish: server overwrites with a **pre-signed GET URL (25h TTL)**. Returned directly in feed — no per-request URL generation. |
@@ -289,7 +289,7 @@ A subtask is a **`Task` row with `parentTaskId` set** — shares every field, re
 | createdAt | timestamp | ✅ | |
 | updatedAt | timestamp | ✅ | |
 
-> **Audience scope is mandatory at publish** — service rejects publish if both `audienceDeptId` and `audienceRoleLevel` are null (PRD v1.1).
+> **Audience scope is mandatory at publish** — service rejects publish if `audienceDepts` is empty AND `audienceRoleLevel` is null (PRD v1.1).
 > `messageJson` is stored for the editor; `messageHtml` is pre-rendered on publish for fast feed rendering. Server sanitizes HTML with `sanitize-html` before storing.
 
 ---

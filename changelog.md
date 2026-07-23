@@ -5,6 +5,27 @@
 
 ---
 
+## 2026-07-23
+
+- `[BE]` Follow-up to the 2026-07-22 docs re-sync: `BroadcastNotice` audience scope reworked to match the now-current schema — the old single nullable `audience_dept` FK is gone, replaced by a new `BroadcastNoticeAudienceDept` join table (composite PK `(broadcast, department)`, `broadcast` FK `CASCADE` — deleting a notice clears its own audience rows, `department` FK `PROTECT` matching this project's default), letting one notice target multiple departments at once (empty = all departments, same semantics the old FK had for null). `docs/reference/schema.prisma.reference` also synced from the real `bolo-backend/prisma/schema.prisma` (missed in the 2026-07-22 doc sync — only `docs/` proper was checked, not this file). Migration `broadcasts/0004_remove_broadcastnotice_audience_dept_and_more.py` applied against the local DB; `apps/broadcasts/admin.py` updated (dropped `audience_dept` from `list_display`). Verified with a manual create/attach-two-depts/cascade-delete smoke test in `manage.py shell`. **Scope check:** `BroadcastNotice`/`BroadcastAcknowledgement` still have no services/views/urls — this is a Phase 1 model-only touch-up, not building the Broadcasts feature (that's still Phase 3+).
+
+## 2026-07-22
+
+- `[STD]` Re-synced `docs/` from the original repo (`/home/test/Desktop/Python_Project/BOLO/Bolo`) after the user pulled the latest `main` there (and its `bolo-backend`/`bolo-web` submodules) — docs-only at the time (a same-day follow-up above did touch `apps/broadcasts/models.py` once the drift was confirmed real). Same procedure as the 2026-07-18 sync: byte-identical copy of every file that differs, `docs/ops/security.md` deliberately excluded (upstream hasn't touched it since our last sync; it still carries this project's own access+refresh-token deviation note untouched).
+
+  **Files updated (byte-identical to source `main`):** `api/api-spec.md`, `architecture/domain-model.md`, `engineering/testing-strategy.md`, `ops/deployment.md`, `product/open-questions-web-v1.md`, `product/prd.md`.
+
+  **New files added** (both genuinely backend-relevant, `docs/README.md`'s inclusion table updated): `api/global-search-ai-contract.md` (draft AI↔search handoff design for the future cross-entity search phase — explicitly marked "not yet locked" even upstream) and `ops/staging-runbook.md` (the original's actual AWS staging setup + real incident narrative — IAM/ECR/RDS/Secrets Manager/S3/EC2/SES).
+
+  **Correction (same day):** an initial pass of this sync incorrectly reported multi-department broadcast audience scope, `GET /tenant/roles`, and the Voice Command Manual Test Plan (+ its companion `open-questions-web-v1.md` §22) as reverted/missing from upstream `main`. That was a stale read — re-verified directly against source content (not just diff output) and all three are present in current `main` and in this project's synced copy. No restoration was actually needed; flagging the correction here so this entry doesn't mislead a future session.
+
+  **Real content changes worth knowing about:**
+  - Broadcast image confirm (`POST /broadcast-notices/:id/image`) now needs an explicit `s3Key` in the request body (previously derived purely from `tenantId`+`broadcastId`).
+  - **`ops/deployment.md`'s elaborate 2026-07-19 rollback/tagging/network-split narrative relocated**, not lost — it now lives in the new `ops/staging-runbook.md`; `deployment.md` itself is a shorter summary pointing there.
+  - A second, overlapping "AI Nudge feed (2026-07-06 redesign)" section exists in `api-spec.md` alongside the `GET /nudges` section this project's copy already had — the source doc itself hasn't reconciled the two; copied faithfully as-is rather than edited on their behalf.
+
+Previously: 2026-07-19 — Phase 2 complete (see below).
+
 ## 2026-07-19
 
 - `[BE]` Phase 2 complete: `common` app foundation, OTP→JWT auth, and a core Task lifecycle vertical slice — the first real API surface in this repo (every app previously had only `models.py`/`admin.py`, zero serializers/services/repositories/views/urls anywhere). Scope deliberately narrowed to core lifecycle only (create/list/detail/edit/delete + accept/done-a/done-d/cancel/remind, minimal label create/list); subtasks, comments, evidence, voice recording, full label CRUD, and audit logging are all still Phase 3+.

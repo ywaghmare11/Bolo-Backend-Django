@@ -115,6 +115,28 @@ REST_FRAMEWORK = {
     "DEFAULT_PAGINATION_CLASS": "apps.common.pagination.BoloPageNumberPagination",
     "PAGE_SIZE": 20,
     "EXCEPTION_HANDLER": "config.exception_handler.bolo_exception_handler",
+    # Only apply throttling where a view opts in via throttle_classes/throttle_scope --
+    # not a DEFAULT_THROTTLE_CLASSES global, since only the OTP-request endpoint needs it today.
+    "DEFAULT_THROTTLE_RATES": {
+        # Per-IP burst guard, layered on top of AuthService.request_otp's existing
+        # per-email 60s resend cooldown (a DB timestamp check -- see apps/auth/services.py).
+        # That check alone doesn't stop someone cycling through many emails from one IP;
+        # this rate is enforced in Redis so it holds across multiple gunicorn workers/processes,
+        # unlike DRF's in-memory cache which is per-process and useless beyond one worker.
+        "otp_request": "5/min",
+    },
+}
+
+# Redis-backed cache -- DRF's ScopedRateThrottle reads/writes through Django's default
+# cache alias (django.core.cache.cache), so pointing "default" at Redis here is what
+# makes the throttle actually shared across processes. Also the shared cache-aside
+# backend for future read-heavy endpoints (Phase 12).
+CACHES = {
+    "default": {
+        "BACKEND": "django_redis.cache.RedisCache",
+        "LOCATION": env("REDIS_URL"),
+        "OPTIONS": {"CLIENT_CLASS": "django_redis.client.DefaultClient"},
+    },
 }
 
 SIMPLE_JWT = {

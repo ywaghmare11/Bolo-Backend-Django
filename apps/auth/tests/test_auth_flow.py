@@ -36,6 +36,25 @@ class TestOtpFlow:
         assert resp.status_code == 429
         assert resp.data["error"]["code"] == "RATE_LIMITED"
 
+    def test_request_otp_ip_throttled_across_distinct_emails(self):
+        """The Redis-backed ScopedRateThrottle (otp_request, 5/min) is IP-keyed, so it
+        catches someone cycling through many different emails from one IP -- a case
+        AuthService's per-email 60s cooldown alone doesn't stop."""
+        client = APIClient()
+        for i in range(5):
+            UserFactory(email=f"burst{i}@abc.edu")
+            resp = client.post(
+                "/api/v1/auth/request-otp/", {"email": f"burst{i}@abc.edu"}, format="json",
+            )
+            assert resp.status_code == 200
+
+        UserFactory(email="burst-over@abc.edu")
+        resp = client.post(
+            "/api/v1/auth/request-otp/", {"email": "burst-over@abc.edu"}, format="json",
+        )
+        assert resp.status_code == 429
+        assert resp.data["error"]["code"] == "RATE_LIMITED"
+
     def test_verify_otp_success_sets_cookies_and_updates_login(self):
         user = UserFactory(email="dean@abc.edu")
         TenantMembershipFactory(user=user, tenant=user.tenant)

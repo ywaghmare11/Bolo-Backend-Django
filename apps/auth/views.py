@@ -1,3 +1,4 @@
+from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
 
 from apps.auth.serializers import RequestOtpSerializer, VerifyOtpSerializer
@@ -10,6 +11,10 @@ from apps.common.responses import success_response
 
 class RequestOtpView(APIView):
     permission_classes = [AllowAny]
+    # Redis-backed (see CACHES in config/settings/base.py) -- per-IP burst guard,
+    # separate from AuthService.request_otp's per-email resend cooldown.
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "otp_request"
 
     def post(self, request):
         serializer = RequestOtpSerializer(data=request.data)

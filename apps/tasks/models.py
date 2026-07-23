@@ -1,4 +1,5 @@
 from django.db import models
+from django.db.models import Q
 
 from apps.common.enums import AcceptanceStatus, Priority, TaskStatus
 from apps.common.models import CreatedOnlyModel, TimestampedModel
@@ -63,6 +64,21 @@ class Task(TimestampedModel):
         db_table = "tasks"
         indexes = [
             models.Index(fields=["status"], name="idx_tasks_status"),
+            # list_assigned/list_delegated/list_needs_attention/counts (TaskRepository)
+            # all filter tenant_id + status (via exact status, status__in, or exclude) --
+            # every list view hits this pair together.
+            models.Index(fields=["tenant", "status"], name="idx_tasks_tenant_status"),
+            # dashboard "due this week"/"overdue" queries and the SORT_ORDER due_date sort.
+            models.Index(fields=["assignee"], name="idx_tasks_assignee"),
+            models.Index(fields=["due_date"], name="idx_tasks_due_date"),
+            # list views default to is_archived=False and that's the overwhelming majority
+            # of rows queried day-to-day (archived = DoneD, terminal); a partial index keeps
+            # the index small instead of indexing rows that are never looked up this way.
+            models.Index(
+                fields=["is_archived"],
+                name="idx_tasks_not_archived",
+                condition=Q(is_archived=False),
+            ),
         ]
 
     def __str__(self):

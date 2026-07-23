@@ -13,8 +13,10 @@ This `docs/` folder is copied from the original **BOLO** repo (`bolo-web` + `bol
 | `architecture/system-design.md` | Component/infra map from the original stack — adapt, don't copy blindly (see CLAUDE.md tech stack table) |
 | `architecture/adr/` | Architecture Decision Records — why past choices (Postgres, tenant model, etc.) were made |
 | `api/api-spec.md` | **The binding contract.** Every endpoint, request/response shape, status/error code. `bolo-web` is coded against this exactly — do not change a response shape here without updating it in the original Bolo repo's copy too, and flagging the drift to whoever maintains `bolo-web`. |
-| `ops/security.md` | Security checklist — tenant isolation, PII/DPDP rules, audit logging requirements |
-| `ops/deployment.md` | Original deploy pipeline — reference only; this project's actual deploy setup will differ (Django/gunicorn vs Node) |
+| `api/global-search-ai-contract.md` | **Draft, not yet locked** (added 2026-07-22 sync) — proposed AI↔search handoff contract for the future cross-entity search feature (`ROADMAP.md` Phase 7). Not yet folded into `api-spec.md` §13 upstream either — reference for design intent only until it's confirmed workable. |
+| `ops/security.md` | Security checklist — tenant isolation, PII/DPDP rules, audit logging requirements. **This project's copy has a documented local deviation** (access+refresh token design, see its own header note and `changelog.md` 2026-07-19) — don't blindly overwrite this file on a future re-sync without re-applying that note. |
+| `ops/deployment.md` | Original deploy pipeline — reference only; this project's actual deploy setup will differ (Django/gunicorn vs Node). As of the 2026-07-22 sync, the detailed rollback/tagging/network narrative lives in `ops/staging-runbook.md` instead — this file now just summarizes and points there. |
+| `ops/staging-runbook.md` | **New (added 2026-07-22 sync)** — original repo's actual AWS staging setup + incident narrative (IAM/ECR/RDS/Secrets Manager/S3/EC2/SES, plus real incidents hit and fixed). Reference for parity once this project gets its own deploy story — don't copy the AWS specifics blindly. |
 | `ops/observability.md` | Original logging/metrics setup — reference for parity, not a hard requirement |
 | `ops/runbook.md` | Original incident playbook — adapt once this service actually runs somewhere |
 | `engineering/testing-strategy.md` | Test pyramid + critical test case list — same cases apply, tooling translates to pytest-django |

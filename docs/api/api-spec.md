@@ -1070,41 +1070,46 @@ Response 201:
 
 ### Permissions recap:
 - `canBroadcast` on `TenantMembership` gates creation — 403 if false.
-- `audienceDeptId` + `audienceRoleLevel` are **both mandatory** at publish — 400 if either is null.
+- At least one of `audienceDeptIds` (array, can target multiple departments — e.g. Computer Science + Civil Engineering only) or `audienceRoleLevel` must be set at publish — 400 `DRAFT_MISSING_FIELDS` if both are empty/null. An empty `audienceDeptIds` array means "not department-restricted" (all departments). (2026-07-17: `audienceDeptId` singular FK → `audienceDeptIds` array, via `BroadcastNoticeAudienceDept` join table — multi-department targeting.)
 - Broadcasts live for **exactly 1 day** — `expiresAt = publishedAt + 24 hours` (set by server, not client).
 - Stored as `messageJson` (TipTap AST — editor source) + `messageHtml` (sanitized HTML — feed rendering).
 - One image attachment maximum.
 
-### Image upload (broadcast) — same unconfirmed/ pattern as evidence
+### Image upload (broadcast) — built 2026-07-17, single-object-per-entity (mirrors profile-picture, not task evidence)
+
+No separate attachment id and no filename in the S3 key — since exactly one image is allowed per
+broadcast (never multiple), the key is derived purely from `(tenantId, broadcastId)`, same shape
+as the profile-picture upload. Original filename is not preserved or shown anywhere client-side.
 
 ```
 S3 paths:
-  Upload →   bolo-broadcast/unconfirmed/{tenantId}/{broadcastId}/{filename}
-  Confirmed → bolo-broadcast/{tenantId}/{broadcastId}/{filename}
-
-S3 lifecycle rule: prefix=unconfirmed/ | delete after 24h
+  Upload →   bolo-broadcast/unconfirmed/{tenantId}/{broadcastId}
+  Confirmed → bolo-broadcast/{tenantId}/{broadcastId}
 ```
 
-**Image serving:** broadcast images render **inline in the feed** (not click-to-open like evidence). At publish time the server generates a pre-signed GET URL with **25h TTL** and stores it in `imageUrl`. The feed returns this URL directly — no per-request URL generation.
+**Image serving:** the receiver view shows an "Attachments" section below the message body with
+the image as a thumbnail — **click-to-open** (a lightbox), not always-inline like the message
+body itself (explicit product decision, 2026-07-17 — supersedes the earlier "renders inline"
+note). At publish time the server generates a pre-signed GET URL with **25h TTL** and overwrites
+`imageUrl` with it. The feed returns this URL directly — no per-request URL generation.
 
 ### POST /upload/broadcast-image-presign — request pre-signed image upload URL
 
-**Access:** `requireAuth` + `canBroadcast = true` + must be sender of the broadcast.
+**Access:** `requireAuth` + `canBroadcast = true` + must be sender of the (still-DRAFT) broadcast.
 
 ```json
 Request:
 {
   "broadcastId": "uuid",
-  "filename": "notice-banner.jpg",
-  "contentType": "image/jpeg",
-  "fileSize": 512000
+  "filename": "notice-banner.jpg",  // used only for contentType inference client-side; not stored
+  "contentType": "image/jpeg",      // image/jpeg | image/png | image/heic only — no PDF/DOC (PRD §7)
+  "fileSize": 512000                // 5MB placeholder cap (no dedicated PRD limit, same as profile pics)
 }
 
 Response 200:
 {
   "data": {
     "uploadUrl": "https://s3.ap-south-1.amazonaws.com/bolo-broadcast/unconfirmed/...",
-    "s3Key": "unconfirmed/{tenantId}/{broadcastId}/notice-banner.jpg",
     "expiresIn": 900
   }
 }
@@ -1114,16 +1119,16 @@ Response 200:
 
 ### POST /broadcast-notices/:id/image — confirm image after S3 upload
 
-Server does: CopyObject → DeleteObject → UPDATE `imageUrl` with confirmed S3 key (not the pre-signed URL yet — that is generated at publish).
+No request body — the confirmed key is derived from `(tenantId, broadcastId)` alone. Server does:
+HeadObject (verify the PUT landed) → CopyObject → DeleteObject → UPDATE `imageUrl` with the
+confirmed S3 key (not the pre-signed URL yet — that is generated at publish).
 
 ```json
-Request: { "s3Key": "unconfirmed/{tenantId}/{broadcastId}/notice-banner.jpg" }
-
 Response 200:
 { "data": { "hasImage": true }, "message": "Image attached" }
 ```
 
-**Errors:** 400 (broadcast already published · not image content type) · 401 · 403 · 404 · 500
+**Errors:** 400 (`CANNOT_EDIT_PUBLISHED`, or `UPLOAD_NOT_CONFIRMED` if the S3 PUT never landed) · 401 · 403 (`FORBIDDEN` — not the sender) · 404 · 500
 
 ---
 
@@ -1157,8 +1162,8 @@ Response 200 (view=received):
       "senderId": "uuid",
       "senderName": "Dean Sethi",
       "messageHtml": "<p>All faculty...</p>",
-      "audienceDeptId": "uuid",
-      "audienceDeptName": "CSE",
+      "audienceDeptIds": ["uuid"],
+      "audienceDeptNames": ["CSE"],
       "audienceRoleLevel": "EXECUTOR",
       "requiresAcknowledgement": true,
       "ackCount": 12,
@@ -1186,8 +1191,8 @@ Request:
 {
   "messageJson": { /* TipTap JSON AST */ },   // required
   "messageHtml": "<p>All faculty...</p>",     // required — sanitized by client before sending; server re-sanitizes
-  "audienceDeptId": "uuid",                  // required at publish; optional while DRAFT
-  "audienceRoleLevel": "EXECUTOR",           // required at publish; optional while DRAFT
+  "audienceDeptIds": ["uuid"],                // at least one of audienceDeptIds/audienceRoleLevel required at publish; optional while DRAFT
+  "audienceRoleLevel": "EXECUTOR",           // at least one of audienceDeptIds/audienceRoleLevel required at publish; optional while DRAFT
   "requiresAcknowledgement": true            // optional — default false
   // image is attached separately via POST /broadcast-notices/:id/image after S3 upload
 }
@@ -1204,14 +1209,14 @@ Response 201:
 }
 ```
 
-**Errors:** 400 (VALIDATION_ERROR — missing `messageJson`/`messageHtml`, or text over the char limit; `INVALID_DEPARTMENT` — `audienceDeptId` doesn't exist in the caller's tenant, corrected 2026-07-13, found via manual API testing: the server previously passed it straight to Prisma and a bad value threw an unhandled 500 instead of a clean 400) · 401 · 403 (BROADCAST_NOT_PERMITTED) · 500
+**Errors:** 400 (VALIDATION_ERROR — missing `messageJson`/`messageHtml`, or text over the char limit; `INVALID_DEPARTMENT` — one or more `audienceDeptIds` don't exist in the caller's tenant, corrected 2026-07-13, found via manual API testing: the server previously passed it straight to Prisma and a bad value threw an unhandled 500 instead of a clean 400; batch-checked via `checkDeptsBelongToTenant` since 2026-07-17's multi-department change) · 401 · 403 (BROADCAST_NOT_PERMITTED) · 500
 
 ---
 
 ### POST /broadcast-notices/:id/publish — publish a draft
 
 Transitions `DRAFT → PUBLISHED`. Server does in order:
-1. Validates `audienceDeptId` + `audienceRoleLevel` both set
+1. Validates at least one of `audienceDeptIds`/`audienceRoleLevel` is set
 2. Sets `expiresAt = now + 24 hours`
 3. If image attached: generates **pre-signed GET URL with 25h TTL** from the stored S3 key → overwrites `imageUrl` with this URL (feed returns it directly — no per-request generation)
 4. Enqueues fan-out notification job (async — not inline)
@@ -1242,7 +1247,7 @@ Request (any subset):
 {
   "messageJson": { /* updated TipTap AST */ },
   "messageHtml": "<p>Updated text</p>",
-  "audienceDeptId": "uuid",
+  "audienceDeptIds": ["uuid"],
   "audienceRoleLevel": "MID",
   "requiresAcknowledgement": false,
   "imageUrl": null
@@ -1252,7 +1257,7 @@ Response 200:
 { "data": { "id": "uuid", "status": "DRAFT" }, "message": "Draft updated" }
 ```
 
-**Errors:** 400 (CANNOT_EDIT_PUBLISHED · `INVALID_DEPARTMENT` if `audienceDeptId` doesn't exist in the caller's tenant, same check/fix as create above) · 401 · 403 · 404 · 500
+**Errors:** 400 (CANNOT_EDIT_PUBLISHED · `INVALID_DEPARTMENT` if one or more `audienceDeptIds` don't exist in the caller's tenant, same check/fix as create above) · 401 · 403 · 404 · 500
 
 ---
 
@@ -1270,7 +1275,7 @@ Response 200: { "data": null, "message": "Broadcast deleted" }
 
 Inserts a `BroadcastAcknowledgement` row. Composite PK `(broadcastId, userId)` prevents duplicates at DB level.
 
-**Access:** `requireAuth`. Broadcast must be `PUBLISHED` and not expired. `requiresAcknowledgement` must be true. **Caller must be in the broadcast's audience** (own `dept`+`roleLevel` match `audienceDeptId`/`audienceRoleLevel`, same match rule as `GET /broadcast-notices` — corrected 2026-07-13, W96) — 403 otherwise. This includes the sender: they can only ack their own broadcast if they'd also see it in their own feed.
+**Access:** `requireAuth`. Broadcast must be `PUBLISHED` and not expired. `requiresAcknowledgement` must be true. **Caller must be in the broadcast's audience** (own `dept` in `audienceDeptIds` or own `roleLevel` matches `audienceRoleLevel`, same match rule as `GET /broadcast-notices` — corrected 2026-07-13, W96) — 403 otherwise. This includes the sender: they can only ack their own broadcast if they'd also see it in their own feed.
 
 ```json
 Response 200:
@@ -1463,6 +1468,59 @@ Marks all unread notifications for the calling user as read.
 ```json
 Response 200:
 { "success": true, "data": { "updatedCount": 7 }, "message": "All notifications marked as read" }
+```
+
+---
+
+### GET /nudges, POST /nudges/:id/skip, POST /nudges/skip-all — AI Nudge feed (2026-07-06 redesign)
+
+**Added 2026-07-06, merged to `bolo-backend` `feature/ai-nudge` 2026-07-09.** Supersedes the "fetch `/notifications?type=AI_NUDGE_*` and split client-side into Screen A/B" approach described above (rows 1293-1295) — that plan predates this dedicated endpoint. The AI Nudge UI (`bolo-web`, one-at-a-time "Today's Check-in" carousel, no Figma reference — W79) is built against this feed, not `/notifications` directly.
+
+**Access:** all three `requireAuth`, scoped to `recipientId = me`.
+
+```
+GET /api/v1/nudges
+```
+Re-validates each pending `AI_NUDGE_FOLLOWUP`/`AI_NUDGE_DUE_PROXIMITY` notification against **current** state (never trusts what was true when it originally fired) — auto-marks-read anything that no longer qualifies.
+
+```json
+Response 200:
+{
+  "data": [
+    {
+      "id": "uuid",
+      "nudgeType": "FOLLOWUP",
+      "entityType": "task",
+      "entityId": "uuid",
+      "title": "AQAR Draft Preparation",
+      "subtitle": "accepted but no progress update since",
+      "actions": ["ADD_COMMENT"],
+      "skipCount": 0,
+      "skipCap": null,
+      "createdAt": "2026-07-09T10:00:00Z"
+    }
+  ]
+}
+```
+- `entityType`: `"task" | "subtask" | "sticky_note" | "broadcast"`.
+- `actions`: drives which buttons the client renders — `ACCEPT_TASK`, `ADD_COMMENT`, `MARK_COMPLETE`, `OPEN_TASK`, `VIEW_BROADCAST`. **Resolving a nudge is never a dedicated call** — the client performs the real underlying action via the existing Task/Comment endpoints (§ this doc), and the item naturally drops off the next `GET /nudges` poll.
+- `skipCap: null` = uncapped (all Follow-up conditions, StickyNote due-proximity). Capped types: Task/Subtask due-proximity (3 due-today / 1 overdue), Broadcast due-proximity (3).
+- `escalation: { toName }` present only for capped Task/Subtask items with an assigner.
+
+```
+POST /api/v1/nudges/:id/skip
+```
+**Reverses W77's original resolution** (`open-questions-web-v1.md`, see W85) — Skip is a real user action again, not purely a backend-sweep side effect. Increments the nudge's skip counter. Returns `409 SKIP_CAP_REACHED` if `skipCount >= skipCap - 1` already (client must hide the Skip button at that same threshold — see `isLastChanceNudge` in `bolo-web/src/types/nudge.ts`).
+```json
+Response 200: { "data": { "skipCount": 2 } }
+```
+
+```
+POST /api/v1/nudges/skip-all
+```
+Skips every currently-pending nudge for the caller in one call. Rejects with `409 LAST_CHANCE_BLOCKING` if anything is at last-chance (mirrors the same client-side disable rule). **Not currently wired in `bolo-web`** — the one-at-a-time carousel UI has no bulk "Skip All" affordance (descoped 2026-07-11, see changelog.md).
+```json
+Response 200: { "data": { "skippedCount": 4 } }
 ```
 
 ---
@@ -1747,6 +1805,27 @@ Response 200:
 
 ---
 
+### GET /tenant/roles — distinct role levels + labels in use for this tenant
+
+**Access:** `requireAuth` — any tenant member. Used by the Broadcast composer's Role Level audience picker, so it shows the tenant's actual vertical-specific labels (Dean/HoD/Faculty for Education, Director/HoD/Employees for CA/CS, or whatever custom `roleLabel` values were set on invite/import) instead of a hardcoded mapping. Distinct `(roleLevel, roleLabel)` pairs from `TenantMembership`, sorted `TOP → MID → EXECUTOR`; rows with no `roleLabel` set are excluded (nothing meaningful to show in a label picker).
+
+```json
+Response 200:
+{
+  "success": true,
+  "message": "OK",
+  "data": [
+    { "roleLevel": "TOP", "roleLabel": "Dean" },
+    { "roleLevel": "MID", "roleLabel": "HoD" },
+    { "roleLevel": "EXECUTOR", "roleLabel": "Faculty" }
+  ]
+}
+```
+
+**Errors:** 401 · 500
+
+---
+
 ### POST /tenant/members/invite — invite a new member
 
 **Access:** `requireOrgRole(['TOP'])`.
@@ -1947,7 +2026,7 @@ Response 200:
 
 ## 17. Departments
 
-> **No admin UI for department creation or deletion.** Departments are **created** exclusively via the Excel onboarding import (`POST /tenant/onboard/import`). The `departments` table exists for two reasons: (1) `BroadcastNotice.audienceDeptId` FK for audience targeting, (2) analytics scoping for HoD (MID role). POST and DELETE are not exposed — use re-import to create or remove departments. **PATCH is exposed** (`TOP` role only) to allow updating `name` and `headUserId` without a full re-import.
+> **No admin UI for department creation or deletion.** Departments are **created** exclusively via the Excel onboarding import (`POST /tenant/onboard/import`). The `departments` table exists for two reasons: (1) `BroadcastNoticeAudienceDept` join table for multi-department audience targeting (2026-07-17), (2) analytics scoping for HoD (MID role). POST and DELETE are not exposed — use re-import to create or remove departments. **PATCH is exposed** (`TOP` role only) to allow updating `name` and `headUserId` without a full re-import.
 
 ### GET /departments
 
@@ -2200,6 +2279,7 @@ Response 200:
 | POST /upload/profile-picture-presign, PATCH/DELETE /me/profile-picture | requireAuth | none | JWT userId; always targets caller's own picture |
 | GET /tenant | requireAuth | requireOrgRole(['TOP']) | tenantId from JWT |
 | GET /tenant/members | requireAuth | none | tenantId from JWT |
+| GET /tenant/roles | requireAuth | none | tenantId from JWT |
 | POST /tenant/members/invite | requireAuth | requireOrgRole(['TOP']) | tenantId from JWT |
 | DELETE /tenant/members/:userId | requireAuth | requireOrgRole(['TOP']) | cannot remove self |
 | GET /analytics/members | requireAuth | requireOrgRole(['TOP','MID']) | service: MID scoped to own dept |

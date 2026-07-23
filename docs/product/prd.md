@@ -63,7 +63,7 @@ Mandatory fields are marked **(required)** — everything else is optional by de
 | **Evidence** | File / photo | Proof attached to a task. Images and documents both allowed. **No task-level aggregate size limit** — document constraints (file size, file type) are managed at the document level only (see §3.5). |
 | **Project Label** | Name | Two-tier label model (see §3.3): **Main Label** (set by assigner, visible to all users on the task) + **Personal Labels** (private per user, for individual filtering only) |
 | **Sticky Note** | Text | Due date/time optional; personal — always private to the user regardless of role; can optionally be promoted into a task. **A Sticky Note with a due date automatically functions as a personal reminder** — there is no separate Reminder entity. |
-| **Broadcast Notice** | Message text | One-to-many message posted to the Notice Board. Optional: audience scope, acknowledgement-required flag, attachment (doc or image). Character limit ~200 words. Expires after a fixed 1 day (not configurable). |
+| **Broadcast Notice** | Message text | One-to-many message posted to the Notice Board. Optional: audience scope, acknowledgement-required flag, attachment (doc or image). Character limit 500 characters. Expires after a fixed 1 day (not configurable). |
 
 ### 3.2 Roles
 
@@ -269,8 +269,9 @@ There is **no rejection state** — the assignee can only accept, never reject.
 
 - Created, edited, and deleted by the **sender only**.
 - Appears prominently on the landing page (Notice Board) for **1 day, fixed, not configurable**.
-- **Character limit: ~200 words.**
-- **Audience Scope is mandatory** — a broadcast cannot be published without a defined audience (Department + Role level). There is no "send to everyone" without explicitly selecting the scope.
+- **Character limit: 500 characters** (raised from 200, 2026-07-16 — `MAX_BROADCAST_CHARS` in `bolo-backend/src/utils/htmlSanitize.ts`; enforced on the stripped-tags visible-text length, not word count).
+- **Audience Scope is mandatory** — a broadcast cannot be published without a defined audience (Department(s) + Role level). There is no "send to everyone" without explicitly selecting the scope.
+- **Department scope supports multi-select** (2026-07-17) — a sender can target several specific departments at once (e.g. Computer Science + Civil Engineering only, not the whole institution), not just a single department or "All Departments."
 - A new member who joins **after** a broadcast was posted **still sees it**, as long as it's still inside its 1-day active window.
 - **Single image attachment allowed** — only one image per broadcast notice; multiple images are not permitted. Optional doc or image attachment.
 - **Acknowledgement:** when a recipient clicks the Acknowledge button, the read/acknowledgement count is incremented. The sender sees only the **aggregate read count** (no per-recipient breakdown of names or timestamps). The acknowledge counter accurately reflects the number of users who have acknowledged.

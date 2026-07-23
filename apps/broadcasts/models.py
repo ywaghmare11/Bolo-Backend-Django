@@ -18,14 +18,9 @@ class BroadcastNotice(TimestampedModel):
     status = models.CharField(
         max_length=20, choices=BroadcastStatus.choices, default=BroadcastStatus.DRAFT,
     )
-    # null = all departments
-    audience_dept = models.ForeignKey(
-        "tenants.Department",
-        on_delete=models.PROTECT,
-        null=True,
-        blank=True,
-        related_name="broadcasts",
-    )
+    # no BroadcastNoticeAudienceDept rows = "not department-restricted" (all departments) --
+    # same semantics the old nullable single audience_dept FK had for null (2026-07-17 redesign:
+    # single FK -> join table, so a notice can target multiple departments at once)
     # null = all role levels
     audience_role_level = models.CharField(
         max_length=20, choices=OrgRoleLevel.choices, null=True, blank=True,
@@ -44,6 +39,27 @@ class BroadcastNotice(TimestampedModel):
 
     def __str__(self):
         return f"BroadcastNotice({self.id})"
+
+
+class BroadcastNoticeAudienceDept(models.Model):
+    """A DRAFT/PUBLISHED notice can target multiple departments at once (e.g. "Computer
+    Science" + "Civil Engineering" only) -- join table instead of a single audienceDeptId
+    FK. No rows for a notice means "not department-restricted" (all departments)."""
+
+    pk = models.CompositePrimaryKey("broadcast", "department")
+    # CASCADE -- deleting the broadcast should clear its own audience-scope rows
+    broadcast = models.ForeignKey(
+        "broadcasts.BroadcastNotice", on_delete=models.CASCADE, related_name="audience_depts",
+    )
+    department = models.ForeignKey(
+        "tenants.Department", on_delete=models.PROTECT, related_name="broadcast_audiences",
+    )
+
+    class Meta:
+        db_table = "broadcast_notice_audience_depts"
+
+    def __str__(self):
+        return f"{self.broadcast_id}->{self.department_id}"
 
 
 class BroadcastAcknowledgement(models.Model):

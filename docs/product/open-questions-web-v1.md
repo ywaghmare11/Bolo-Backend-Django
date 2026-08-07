@@ -152,7 +152,7 @@ These need your eyes before we cascade them into `domain-model.md` / `schema.pri
 
 | # | Question | Status |
 |---|---|---|
-| **W24** | Search scope — global full-text, or scoped fields? | ✅ Resolved — **Entire scope** — full-text across all data the user can access. (2026-06-17) |
+| **W24** | Search scope — global full-text, or scoped fields? | ✅ **Updated (2026-07-23) — narrowed from the original "entire scope" answer.** Client direction during implementation: only **Task/Subtask and Sticky Note** are result types — a person's name is a match field (surfaces their tasks), not a third result type. Fields matched: `title`, `description`, `mainLabel.name`, `assigneeLabel.name` (privacy-scoped to the assignee), assignee/assigner name, `status`/`priority`/`due` filters. `Comment.text`/`Evidence.fileName`/`VoiceRecording.rawTranscript` confirmed still out of scope. Backend changed from the originally-recorded AWS OpenSearch to PostgreSQL + a standalone AI query-understanding layer — OpenSearch would have added ₹2,000–9,000/month not in the client's approved hosting budget (see `tech-playbook/decisions/database.md`). Full design: `docs/api/global-search-ai-contract.md`. (2026-06-17, updated 2026-07-23) |
 
 ---
 

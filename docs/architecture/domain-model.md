@@ -1,6 +1,6 @@
 # BOLO — Domain Model
 
-> **Last synced:** 2026-06-27 — added `VoiceRecording` entity (W37 cascaded): stores raw SDK transcript, audio S3 key, language, duration, and AI confidence score per task.
+> **Last synced:** 2026-08-03 (bolo-backend-django) — the upstream file itself had a near-zero diff (2 lines) since our previous 2026-07-22 sync despite substantial code-level changes in that window; this pass adds what upstream's own `domain-model.md` hadn't caught up to yet, verified directly against `bolo-backend` source: `JargonWord` entity (new), `Task.evidenceRequired` + DoneA gate, cancelled-subtask-counts-toward-parent-DoneD correction, `StickyNote.colorCode` + retention sweep, `BroadcastNotice` audience-role-level join table + image streaming + edit/delete/sent-view, `Comment` audit actions, `Evidence`/profile-picture file streaming + evidence delete-access narrowing, member reactivation. Previously (2026-06-27): added `VoiceRecording` entity (W37 cascaded): stores raw SDK transcript, audio S3 key, language, duration, and AI confidence score per task.
 > **Platform:** Web-based (V1). Mobile PRD is a future phase — architecture must remain mobile-compatible.
 > **Backing schema:** `bolo-backend/prisma/schema.prisma` is kept in lockstep with this file.
 > ⚠️ Genuinely open items: **W15** (task card/detail fields — pull from Figma), **W19** (org-role permission model — confirm before touching role-enforcement logic), **W64** (readiness indicators data). All others resolved — see `docs/product/open-questions-web-v1.md`.
@@ -64,7 +64,7 @@ Tenant isolation: **Row-Level Security on `tenant_id`** — every query scoped t
 | name | string | ✅ | |
 | email | string | ✅ | Primary identifier; login via Email OTP; `@unique` |
 | phone | string | — | Collected during Excel onboarding; future notification channels |
-| profilePicUrl | string | — | S3 object key (not a URL) — pre-signed GET URL generated per request, same pattern as `Evidence.fileUrl`; optional, add/update/delete via `POST /upload/profile-picture-presign` → `PATCH /me/profile-picture` → `DELETE /me/profile-picture` |
+| profilePicUrl | string | — | S3 object key (not a URL); optional, add/update/delete via `POST /upload/profile-picture-presign` → `PATCH /me/profile-picture` → `DELETE /me/profile-picture`. **Changed (bolo-backend-django sync 2026-08-03):** reading the picture now has two endpoints — the existing metadata endpoint (`GET /users/:userId/profile-picture`) plus a new backend-streamed file endpoint, `GET /users/:userId/profile-picture/file` (any authenticated tenant member — no per-viewer restriction, since profile pictures are already visible tenant-wide). Same pre-signed-URL-avoidance rationale as `Evidence`/`BroadcastNotice` above, though profile pictures have no access restriction to enforce beyond tenant membership. |
 | preferredLang | enum | ✅ | `EN` \| `HI`; default `EN` |
 | lastLoginAt | timestamp | — | Added 2026-07-14 (W99) — set on successful OTP verify. Session-tracking field that doubles as the DB mutation the generic `AuditLog` middleware keys `USER_LOGIN` off of — see §2.6 in `system-design.md`. |
 | lastLogoutAt | timestamp | — | Added 2026-07-14 (W99) — set on logout. Same purpose as `lastLoginAt`, and gives `logout` its first real service/repository layer (was controller-only, no DB call, before this). |
@@ -103,6 +103,7 @@ Tenant isolation: **Row-Level Security on `tenant_id`** — every query scoped t
 
 > **Task-level roles (Delegator / Assignee) are not stored here** — derived from `assignerId` / `assigneeId` on the Task.
 > **Org chart tree** is built from `reportsToId` — the designation (`roleLabel`) is display-only and does not control the tree shape.
+> **Member reactivation (added, bolo-backend-django sync 2026-08-03):** `removeMember` only ever deletes this `TenantMembership` row — the `User` row itself survives. A new `reactivateMember` flow (tenant-scoped `POST /tenant/members/:userId/reactivate`, `TOP`-only, plus a cross-tenant `POST /platform-admin/tenants/:tenantId/members/:userId/reactivate` variant) re-creates a fresh membership for that same still-existing user, taking the same field set as this table (`roleLevel`, `roleLabel?`, `departmentId?`/`departmentName?`, `reportsToId?`, `isHead?`). Rejects if the user already has an active membership (`409` "This member is already active"); `isHead=true` only valid when `roleLevel = MID` and a department is given. New `AuditAction.MEMBER_REACTIVATED` fires on the platform-admin path.
 
 ---
 
@@ -139,6 +140,22 @@ Tenant isolation: **Row-Level Security on `tenant_id`** — every query scoped t
 
 ---
 
+### JargonWord *(added 2026-07-31, bolo-backend-django sync 2026-08-03)*
+
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| id | UUID | ✅ | |
+| vertical | enum | ✅ | `EDUCATION` \| `CA_CS` — **not tenant-scoped**; one shared dictionary per vertical, not per tenant |
+| term | string | ✅ | Max 100 chars. `@@unique([vertical, term])` |
+| variants | string[] | ✅ | Alternate spellings/mis-hearings that should resolve to the same term; default `[]` |
+| isActive | boolean | ✅ | Default `true` |
+| createdBy | UUID | ✅ | FK → User |
+| createdAt / updatedAt | timestamp | ✅ | |
+
+> Grounds the voice-recognition and Global Search query-understanding layers against vertical-specific jargon (e.g. "NAAC", "MGT-7") that a general-purpose model wouldn't otherwise get right. Managed via CRUD + Excel bulk-import/template endpoints, gated by an email allow-list (`JARGON_ADMIN_EMAILS`) — **not** `PlatformAdmin` and **not** `OrgRoleLevel`, a distinct admin concept. Deliberately **not audit-logged** (no route-config row upstream, by design). See `docs/api/api-spec.md` for the full CRUD + bulk-import contract.
+
+---
+
 ### Task
 
 | Field | Type | Required | Notes |
@@ -156,6 +173,7 @@ Tenant isolation: **Row-Level Security on `tenant_id`** — every query scoped t
 | mainLabelId | UUID | — | FK → ProjectLabel (Main Label — assigner sets; visible to all) |
 | assigneeLabelId | UUID | — | FK → ProjectLabel (Assignee personal label — assignee sets; private; cleared on reassignment) |
 | isArchived | boolean | ✅ | `true` when assigner marks DONE_D on a main task; default `false` |
+| evidenceRequired | boolean | ✅ | **Added 2026-07-30 (bolo-backend-django sync 2026-08-03).** Assigner-editable (create + edit, same rule as `priority`/`mainLabelId`); default `false`. When `true`, blocks the assignee's DoneA transition until at least one `Evidence` row exists for the task (`400 EVIDENCE_REQUIRED` otherwise). |
 | acceptedAt | timestamp | — | When assignee accepted |
 | parentTaskId | UUID | — | FK → Task (self-reference). When set, this Task **is** a subtask |
 | createdAt | timestamp | ✅ | |
@@ -174,8 +192,9 @@ Tenant isolation: **Row-Level Security on `tenant_id`** — every query scoped t
 
 **Status propagation rules (service layer):**
 - Parent `CANCELLED` → all non-`DONE_D` subtasks cascade to `CANCELLED`
-- Parent cannot reach `DONE_D` until all subtasks are `DONE_D` (gate, not auto-propagation)
-- Subtask `OVERDUE` / `CANCELLED` does NOT affect parent status
+- Parent cannot reach `DONE_D` until all subtasks are `DONE_D` **or `CANCELLED`** (gate, not auto-propagation) — **corrected 2026-08-03 sync**: a `CANCELLED` subtask now also counts as resolved (upstream `TaskRepository.allSubtasksDoneD` changed from `status: {not: 'DONE_D'}` to `status: {notIn: ['DONE_D','CANCELLED']}`), since a cancelled subtask can never itself reach `DONE_D` and would otherwise block the parent forever. The line above previously said "all subtasks are `DONE_D`" only — that was correct as of the original design but is now stale.
+- Subtask `OVERDUE` does NOT affect parent status
+- An `OVERDUE` task auto-transitions back to `OPEN`/`IN_PROGRESS` if its due date is edited to today-or-later (added since original design — previously only the sweep job ever un-set `OVERDUE`)
 
 ---
 
@@ -209,9 +228,10 @@ A subtask is a **`Task` row with `parentTaskId` set** — shares every field, re
 > No GPS / geotag fields — web platform, no device location API in V1.
 > No task-level aggregate cap (PRD v1.1 removed it). Per-file size limit TBD.
 > Files never pass through the backend — client uploads directly to S3 via pre-signed PUT URL.
-> `fileUrl` stores the **S3 object key** (not a URL). A pre-signed GET URL with **15 min TTL** is generated on demand when the file is accessed. Raw S3 keys are never returned in API responses.
+> `fileUrl` stores the **S3 object key** (not a URL). **Changed 2026-07-31ish (bolo-backend-django sync 2026-08-03):** file access moved from a pre-signed GET URL returned in the list response to a backend-streamed endpoint, `GET /tasks/:id/evidence/:eid/file` — the app returns an app-relative path (`/tasks/{id}/evidence/{eid}/file`) instead of a signed S3 URL, and the backend re-checks assigner-or-assignee access on every request rather than baking authorization into a copyable, time-limited URL. Same pattern applied to broadcast images and profile pictures in this same range — see `BroadcastNotice` and `docs/api/api-spec.md`'s user-profile section. Raw S3 keys are never returned in API responses either way.
 > Access: assigner and assignee only — enforced in the service layer via task ownership check.
-> Upload safety: files land in `bolo-evidence/unconfirmed/` first; `POST /tasks/:id/evidence` moves to confirmed path + creates DB row. S3 lifecycle deletes `unconfirmed/` objects after 24h.
+> **Delete access narrowed (bolo-backend-django sync 2026-08-03):** `DELETE /tasks/:id/evidence/:eid` is now **uploader-only** (previously uploader-or-assigner) — matches `Comment`'s existing author-only delete rule. A real behavior change, not just a refactor.
+> Upload safety: files land in `bolo-evidence/unconfirmed/` first; `POST /tasks/:id/evidence` moves to confirmed path + creates DB row. S3 lifecycle deletes `unconfirmed/` objects after 24h. `.xls` (legacy binary Excel) is now accepted alongside `.xlsx` for evidence uploads.
 
 ---
 
@@ -251,6 +271,7 @@ A subtask is a **`Task` row with `parentTaskId` set** — shares every field, re
 | updatedAt | timestamp | ✅ | |
 
 > Full CRUD — author can edit and delete their own comments. No threaded comments in V1.
+> **Audit-logged (added, bolo-backend-django sync 2026-08-03):** `COMMENT_CREATED`/`COMMENT_UPDATED`/`COMMENT_DELETED` `AuditAction` enum values, migration `20260725140217_add_comment_audit_actions` upstream. **Gotcha for the generic audit middleware:** `POST/PATCH/DELETE /tasks/:id/comments[/:cid]`'s only reliable path param is the **task's** id, not the comment's — the audit row must resolve the comment id from the response body (create) or the `:cid` param (update/delete) rather than assuming a single `idParam` convention works uniformly. Relevant when `apps/common/audit_route_config.py` (Architecture Rules point 8) gets a comments entry in Phase 3.
 
 ---
 
@@ -261,6 +282,7 @@ A subtask is a **`Task` row with `parentTaskId` set** — shares every field, re
 | id | UUID | ✅ | |
 | userId | UUID | ✅ | Owner — private to creator always |
 | text | text | ✅ | |
+| colorCode | string | ✅ | **Added 2026-07-24 (bolo-backend-django sync 2026-08-03), migration `20260724000000_add_sticky_note_color_code`.** Hex color; default `#FEF3C7`. Now also returned by Global Search's sticky bucket (a bug where this field wasn't selected in the search query, hence never shown, was fixed 2026-08-01). |
 | dueAt | timestamp | — | When set → acts as reminder; shown red when imminent/past |
 | isPinned | boolean | ✅ | Drives Pinned / Unpinned sub-tab; default `false` |
 | promotedToTaskId | UUID | — | FK → Task; `@unique` — one note → one task |
@@ -268,6 +290,7 @@ A subtask is a **`Task` row with `parentTaskId` set** — shares every field, re
 | updatedAt | timestamp | ✅ | |
 
 > **W30 resolved** — no separate Reminder entity. A `StickyNote` with `dueAt` set IS the reminder. EventBridge fires `REMINDER_FIRED` notification for notes where `dueAt <= NOW()`.
+> **Retention sweep (added, bolo-backend-django sync 2026-08-03):** a periodic job (`stickyNoteRetentionSweep.job.ts` upstream — a 24h `setInterval` there, explicitly called out in their own code comment as a stand-in for "EventBridge Scheduler + Lambda in production"; the natural Django equivalent is a Celery beat periodic task, not a raw interval) **hard-deletes** `StickyNote` rows where `dueAt < now() - 3 days`, per PRD §5.6.
 
 ---
 
@@ -282,15 +305,16 @@ A subtask is a **`Task` row with `parentTaskId` set** — shares every field, re
 | messageHtml | string | ✅ | Sanitized HTML — rendered in the broadcast feed |
 | status | enum | ✅ | `DRAFT` \| `PUBLISHED`; default `DRAFT` |
 | audienceDepts | UUID[] | — | Via `BroadcastNoticeAudienceDept` join table (broadcastId, deptId — composite PK); can target multiple departments (e.g. Computer Science + Civil Engineering only); empty = all departments (2026-07-17: replaced the single nullable `audienceDeptId` FK) |
-| audienceRoleLevel | enum | — | `TOP` \| `MID` \| `EXECUTOR`; null = all role levels |
+| audienceRoleLevels | enum[] | — | **Changed 2026-07-30 (bolo-backend-django sync 2026-08-03)** — was a single nullable `audienceRoleLevel` enum FK, now `BroadcastNoticeAudienceRoleLevel` join table (broadcastId, roleLevel — composite PK), same shape/reasoning as `audienceDepts`. Can now target multiple role levels at once (e.g. HoD + Faculty); empty = all role levels (same null semantics as the old field). Migration preserved existing data via `INSERT...SELECT` before dropping the old column. |
 | requiresAcknowledgement | boolean | ✅ | Default `false` |
-| imageUrl | string | — | Single image only. During DRAFT: stores S3 object key. At publish: server overwrites with a **pre-signed GET URL (25h TTL)**. Returned directly in feed — no per-request URL generation. |
+| imageUrl | string | — | Single image. During DRAFT: stores S3 object key. **Changed (bolo-backend-django sync 2026-08-03):** the previous design overwrote this with a pre-signed GET URL (25h TTL) at publish time and returned it directly in the feed — meaning the same signed link, a bearer credential by construction, sat valid in the DB and was handed to every audience member for 25h regardless of later session/membership changes. Replaced with a backend-streamed endpoint, `GET /broadcast-notices/:id/image`, which re-checks access on **every** request: sender always allowed (any status); everyone else requires `status = PUBLISHED` AND not expired AND dept-match AND role-match, else `403 NOT_IN_AUDIENCE`. Same pattern applied to Evidence and profile pictures in this range. |
 | expiresAt | timestamp | — | Set to `createdAt + 1 day` on publish — not configurable (W54 resolved) |
 | createdAt | timestamp | ✅ | |
 | updatedAt | timestamp | ✅ | |
 
-> **Audience scope is mandatory at publish** — service rejects publish if `audienceDepts` is empty AND `audienceRoleLevel` is null (PRD v1.1).
+> **Audience scope is mandatory at publish** — service rejects publish if `audienceDepts` is empty AND `audienceRoleLevels` is empty (PRD v1.1).
 > `messageJson` is stored for the editor; `messageHtml` is pre-rendered on publish for fast feed rendering. Server sanitizes HTML with `sanitize-html` before storing.
+> **Edit/Delete/sent-view added (bolo-backend-django sync 2026-08-03):** `PATCH /broadcast-notices/:id` (sender-only; editable while DRAFT or PUBLISHED-and-not-expired, else `400 CANNOT_EDIT_EXPIRED`) — re-sanitizes `messageHtml`, re-checks the ~200-char limit, and on an already-published notice notifies **only newly-added recipients** (set-difference of old vs new audience resolution), not the whole audience again and not removed recipients. `DELETE /broadcast-notices/:id` (sender-only). `GET /broadcast-notices?view=received|sent` — `sent` currently excludes DRAFT notices (pending a resume/publish-draft UI action).
 
 ---
 
@@ -380,6 +404,7 @@ A subtask is a **`Task` row with `parentTaskId` set** — shares every field, re
 | 8c | `AI_NUDGE_FOLLOWUP` | AI Nudge — Follow-up. **Scope narrowed 2026-07-13 (client-directed):** down to 2 conditions, both assignee-only — (b) accepted, no progress since → assignee, `Add Comment`; (c) comment posted and the **assignee** owes the reply (assigner posted last) → assignee, `Add Comment`. Conditions (a) not-yet-accepted/`Accept Task`, (d) `DONE_A`-awaiting-`DONE_D`/`Mark Complete`, (e) subtasks-done/`Mark Complete` are **removed entirely, not just their buttons** — those are irreversible actions the user should take deliberately from the task itself, not one-click from a nudge, and they're already covered by the general Notification panel. The **assigner is out of scope for Follow-up entirely** — if the assignee posted the last comment and is waiting on the assigner, no nudge fires (there's no one left in scope to notify). No Subtask/Broadcast/StickyNote — Task only, and Subtask is no longer distinguished from Task (`entityType` is always `"task"`; a subtask is just another task from the assignee's point of view). Skip counter tracked for visibility only, no cap, no escalation. Fires every 6h, no office-hours gate. | Assignee only |
 | 8d | `AI_NUDGE_DUE_PROXIMITY` | AI Nudge — Due Date Proximity. **Scope narrowed 2026-07-13: Task only** (Subtask/StickyNote/Broadcast all dropped). Fires every 3h, no office-hours gate. Already-accepted only (`IN_PROGRESS`/`OVERDUE` or due-today) — an unaccepted-but-overdue task gets no nudge at all now (Follow-up's "not accepted" condition was removed, not replaced). Actions: `Add Comment` + `Open Task` + `Skip`. **Skip is a user-clicked button**, never auto-incremented by the sweep. **Add Comment resolves the nudge for this cycle** (fixed 2026-07-13 — was previously a no-op for Due-Proximity specifically, since its eligibility check never looked at comments; the fix re-validates against comments posted after the notification fired, whether via the nudge panel or the task directly). Cap: 3 for due-today, 1 for overdue. **No blocking behavior (removed 2026-07-13):** Skip is **never** disabled or hidden at cap, and the panel is never forced closed/blocked — at cap the card just shows a plain warning ("skip this and it'll be escalated to your assigner"); the user can keep skipping past it if they choose. **Escalation is still real**, independent of the UI: sweep-side check each tick — if `skipCount >= cap`, not yet escalated, and the task hasn't reached at least `DONE_A` → one-time in-app+email to the **assigner**, guarded by `NudgeSkipCounter.escalatedAt` so it never repeats. Reaching `DONE_A` drops the task out of the sweep query entirely (no longer `OPEN`/`IN_PROGRESS`/`OVERDUE`) — no escalation. **The assignee is only ever held to `DONE_A`, never `DONE_D`.** | Assignee (routine) + assigner (one-time escalation only) |
 | — | **Feed composition (added 2026-07-13):** `GET /nudges` returns **max 5 items total**, not everything eligible. Due-Proximity fills first (ordered by `Task.priority`, P1 highest), up to 5. If fewer than 5 Due-Proximity items exist, Follow-up fills the remaining slots — also ordered by `Task.priority` first, then by `NudgeSkipCounter.lastShownAt` ascending (oldest-shown-first, nulls/never-shown first) as the rotation tiebreaker within the same priority. `lastShownAt` is updated on every Follow-up item that actually appears in a response — this is what makes the rotation self-correcting: as the user resolves what's currently shown, the next-oldest-unshown candidate surfaces on the next fetch, rather than the same few items camping the feed forever. | — |
+| — | **First-login-of-the-day fast-track (added 2026-07-16):** the 3h/6h interval gate has no notion of whether the user was ever online — a user with short, irregular sessions could go a full day without a session ever overlapping the exact moment the interval elapsed. Fix: users who logged in today (`User.lastLoginAt`) but haven't received any AI Nudge notification yet today bypass the interval gate once, on the very next sweep tick — everything currently eligible for them fires at once. Self-limiting: the moment it fires, their own new notification is "today," so the next sweep computation naturally excludes them and normal gating resumes for the rest of the day. No new schema — computed from existing `lastLoginAt`/`Notification.createdAt`. | — |
 | 10 | `SUBTASK_DONE_A` | Subtask Marked DoneA | Sub-task assigner |
 | 11 | `SUBTASK_DONE_D` | Subtask Marked DoneD | Sub-task assignee |
 | 12 | `BROADCAST_POSTED` | Broadcast Posted | All tenant members in audience scope |

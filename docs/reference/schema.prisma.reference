@@ -1,7 +1,10 @@
 // bolo-backend/prisma/schema.prisma
 // BOLO — Web MVP Schema (V1.2)
 // Label model redesign: single ProjectLabel table, dual FK on Task (mainLabelId + assigneeLabelId).
-// TaskPersonalLabel table removed. 14 tables total.
+// TaskPersonalLabel table removed. 21 models as of the 2026-08-03 sync (added JargonWord and
+// BroadcastNoticeAudienceRoleLevel — the latter replaces BroadcastNotice's old single
+// audienceRoleLevel FK) — don't treat this count as load-bearing, re-check with `grep -c "^model "`
+// on the next sync rather than trusting this comment to stay current.
 
 generator client {
   provider      = "prisma-client-js"
@@ -106,7 +109,11 @@ enum AuditAction {
   TENANT_CREATED
   MEMBER_ADDED
   MEMBER_REMOVED
+  MEMBER_REACTIVATED
   MEMBERS_BULK_IMPORTED
+  COMMENT_CREATED
+  COMMENT_UPDATED
+  COMMENT_DELETED
 }
 
 enum NotificationType {
@@ -131,8 +138,8 @@ enum NotificationType {
   EVIDENCE_ATTACHED
   // Reminder (StickyNote with dueAt — W30 resolved)
   REMINDER_FIRED
-  // AI Nudge — redesigned 2026-07-06, 2 types (AI_NUDGE_PERIODIC retired,
-  // folded into AI_NUDGE_FOLLOWUP's 5 conditions — see domain-model.md row 8b/8c)
+  // AI Nudge — redesigned 2026-07-06, scope narrowed 2026-07-13 to 2 conditions,
+  // Task-only (AI_NUDGE_PERIODIC retired — see domain-model.md row 8c/8d, system-design.md)
   AI_NUDGE_FOLLOWUP
   AI_NUDGE_DUE_PROXIMITY
 }
@@ -213,6 +220,7 @@ model User {
   broadcastsSent            BroadcastNotice[]          @relation("BroadcastSender")
   auditLogsActioned         AuditLog[]                 @relation("AuditLogActor")
   projectLabelsCreated      ProjectLabel[]             @relation("ProjectLabelCreator")
+  jargonWordsCreated        JargonWord[]               @relation("JargonWordCreator")
 
   @@index([tenantId])
   @@map("users")
@@ -304,6 +312,30 @@ model ProjectLabel {
   @@map("project_labels")
 }
 
+// ─── JargonWord ───────────────────────────────────────────────────────────────
+// Added 2026-07-31 (bolo-backend-django sync 2026-08-03). NOT tenant-scoped — one shared
+// dictionary per Vertical (EDUCATION/CA_CS), used to ground the voice-recognition/search
+// query-understanding layers against vertical-specific jargon (e.g. "NAAC", "MGT-7"). Managed
+// by an email allow-list gate (JARGON_ADMIN_EMAILS), not PlatformAdmin and not OrgRoleLevel —
+// see docs/api/api-spec.md for the CRUD + bulk-import contract. Deliberately NOT audit-logged
+// (see the original repo's auditRouteConfig.ts — no config rule for this route by design).
+model JargonWord {
+  id        String   @id
+  vertical  Vertical
+  term      String
+  variants  String[] @default([])
+  isActive  Boolean  @default(true)
+  createdBy String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  creator User @relation("JargonWordCreator", fields: [createdBy], references: [id])
+
+  @@unique([vertical, term])
+  @@index([vertical])
+  @@map("jargon_words")
+}
+
 // ─── Task (and Subtask via self-reference) ────────────────────────────────────
 
 model Task {
@@ -320,6 +352,7 @@ model Task {
   mainLabelId      String?
   assigneeLabelId  String?
   isArchived       Boolean          @default(false)
+  evidenceRequired Boolean          @default(false)
   acceptedAt       DateTime?
   parentTaskId     String?
   createdAt        DateTime         @default(now())
@@ -415,6 +448,7 @@ model StickyNote {
   id               String    @id
   userId           String
   text             String
+  colorCode        String    @default("#FEF3C7")
   dueAt            DateTime?
   isPinned         Boolean   @default(false)
   promotedToTaskId String?   @unique
@@ -438,17 +472,17 @@ model BroadcastNotice {
   messageJson             Json
   messageHtml             String
   status                  BroadcastStatus @default(DRAFT)
-  audienceRoleLevel       OrgRoleLevel?
   requiresAcknowledgement Boolean         @default(false)
   imageUrl                String?
   expiresAt               DateTime?
   createdAt               DateTime        @default(now())
   updatedAt               DateTime        @updatedAt
 
-  tenant           Tenant                        @relation(fields: [tenantId], references: [id])
-  sender           User                          @relation("BroadcastSender", fields: [senderId], references: [id])
-  audienceDepts    BroadcastNoticeAudienceDept[]
-  acknowledgements BroadcastAcknowledgement[]
+  tenant             Tenant                             @relation(fields: [tenantId], references: [id])
+  sender             User                               @relation("BroadcastSender", fields: [senderId], references: [id])
+  audienceDepts      BroadcastNoticeAudienceDept[]
+  audienceRoleLevels BroadcastNoticeAudienceRoleLevel[]
+  acknowledgements   BroadcastAcknowledgement[]
 
   @@index([tenantId])
   @@index([senderId])
@@ -471,6 +505,22 @@ model BroadcastNoticeAudienceDept {
   @@index([broadcastId])
   @@index([deptId])
   @@map("broadcast_notice_audience_depts")
+}
+
+// Replaces the old single nullable `audienceRoleLevel` FK (2026-07-30 migration) — a
+// DRAFT/PUBLISHED notice can target multiple role levels at once (e.g. HoD + Faculty only),
+// same reasoning/shape as BroadcastNoticeAudienceDept above. No specific role-level rows means
+// "not role-restricted" (all role levels), same semantics the old nullable field had for null.
+// No FK on roleLevel — OrgRoleLevel is a fixed enum, not a table.
+model BroadcastNoticeAudienceRoleLevel {
+  broadcastId String
+  roleLevel   OrgRoleLevel
+
+  broadcast BroadcastNotice @relation(fields: [broadcastId], references: [id], onDelete: Cascade)
+
+  @@id([broadcastId, roleLevel])
+  @@index([broadcastId])
+  @@map("broadcast_notice_audience_role_levels")
 }
 
 // ─── BroadcastAcknowledgement ─────────────────────────────────────────────────

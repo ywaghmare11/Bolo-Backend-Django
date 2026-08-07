@@ -225,9 +225,30 @@ The backend pod from OpenShift's BuildConfig uses `deployment=bolo-backend`, not
 
 ## 5. Production — Grafana Cloud
 
-**Decision (locked 2026-07-10):** Grafana Cloud free tier for all prod signal backends.
+**Decision (locked 2026-07-10, reconfirmed 2026-07-23):** Grafana Cloud free tier for all prod signal backends — not just staging. *Why free over Pro ($19/mo + usage):* cost-driven, accepted knowingly rather than as a default — 14-day retention is a real constraint for prod vs. Pro's 30-day logs/traces + 13-month metrics, judged acceptable for this project's scale. No predefined trigger for migrating to Pro; revisit only if real usage data shows the free tier's volume caps are actually being approached. See `tech-playbook/decisions/cloud.md` Group 2.
 
-Free tier capacity: 50 GB logs/month · 10K active metric series · 50 GB traces · 14-day log retention · 13-month metric retention. Sufficient for MVP.
+**Corrected 2026-07-23** — free tier retention is **14 days across the board** (logs, metrics, traces, profiles all the same), not 13 months for metrics as this doc previously said. That 13-month figure is a Cloud Pro feature, not free tier — caught while actually setting up the Grafana Cloud account (Step 11) and checking the real current plan comparison page.
+
+**Free tier caps, verified 2026-07-23 directly against grafana.com/pricing (the volume numbers below turned out to be accurate all along — only the retention duration above was wrong):**
+
+| Signal | Cap | Retention |
+|---|---|---|
+| Logs | 50 GB ingested/month | 14 days |
+| Metrics | 10K active series | 14 days |
+| Traces | 50 GB ingested/month | 14 days |
+| Profiles | 50 GB ingested/month | 14 days (not used by BOLO) |
+
+*Sufficiency check for BOLO's actual scale:* logs/traces have huge headroom — pino JSON log lines run ~300–500 bytes each, so even 10K req/day is only ~240 MB/month, ~200x under the 50GB cap; traces follow similar math. **Metrics (10K active series) is the one worth actually watching** — series count scales with label cardinality, not request volume. Current `/metrics` scrape (Node default metrics + HTTP histograms across dozens of routes) is likely low-thousands, comfortably under the cap. The real risk isn't organic growth, it's ever adding a custom metric with a high-cardinality label (`userId`, `tenantId`, etc.) — avoid that rather than worry about the cap itself.
+
+**✅ Open question resolved (2026-07-23) — final verdict: Grafana Cloud for both staging and prod, region pinned to India.** Confirmed directly from Grafana's own regional-availability docs: Grafana Cloud offers an India region — **AWS `ap-south-1` (Mumbai)** and GCP `asia-south1` — same AWS region as the rest of BOLO's infrastructure. This fully resolves the DPDP/data-residency question raised earlier (nobody had checked this when the original 2026-07-10 decision locked Grafana Cloud in): telemetry never has to leave India, no cross-border transfer via a third-party SaaS. No need for the AWS-native (CloudWatch/X-Ray) fallback — documented here only as a still-available option if Grafana Cloud ever becomes a problem for an unrelated reason (Alloy's export config is a small change either way, not a redesign).
+
+**⚠️ Action for stack creation:** the region picker does NOT default to India — must be explicitly selected as `India (AWS ap-south-1)` when creating the stack, not left on whatever's pre-selected (typically US). Grafana Cloud does not support changing a stack's region after creation — get this right at creation time or the stack has to be recreated from scratch.
+
+**✅ Verified 2026-07-23 — stack already correctly in India.** Real stack (renamed `bolo`, instance ID `1734066`) confirmed via its Instance Details page: `Grafana Cloud cluster / region: India - prod-ap-south-1`, `Cloud Service Provider: aws - ap-south-1`. No deletion/recreation needed — briefly investigated deleting and recreating in the right region (also found free-tier accounts can't delete their one stack at all, a real limitation worth knowing for later — see Grafana's own docs), but turned out unnecessary once actually checked.
+
+**✅ Real endpoints wired up (2026-07-23, PR #56 pending).** `alloy-config-prod.alloy` and `fetch-secrets.sh` updated with the real "bolo" stack's Loki/Prometheus/Tempo connection details — no longer placeholders. One design change from the original scaffolding: **one API key per service, not one shared key** — decoding the 3 tokens confirmed they're genuinely different (`GRAFANA_CLOUD_LOKI_API_KEY`/`_PROM_API_KEY`/`_TEMPO_API_KEY`, 6 secrets total with the 3 user IDs). Secrets created in `bolo/staging/*`.
+
+**⚠️ Open risk, not yet verified end-to-end:** the credentials came from the Cloud Portal's per-service "Details" page — which doubles as setup instructions for a self-hosted Grafana *querying* Grafana Cloud, not explicitly a push/write wizard. Token names contain `read`. Won't know for certain until the next `bolo-backend` deploy whether these actually have write scope — if `alloy` gets a 401/403 pushing data, check Security → Access Policies in the Cloud Portal for a dedicated write-scoped token instead. Remaining steps to actually finish Step 11: merge #56 → redeploy `bolo-backend` → confirm `alloy` stops restarting → confirm data actually appears in the Grafana Cloud stack under `env=staging`.
 
 ### What runs on prod EC2
 

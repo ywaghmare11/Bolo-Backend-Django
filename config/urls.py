@@ -17,9 +17,19 @@ Including another URLconf
 from django.contrib import admin
 from django.urls import include, path
 
+from apps.evidence.views import EvidencePresignView
+from apps.tasks.views import VoicePresignView
+
 urlpatterns = [
     path('admin/', admin.site.urls),
     path('api/v1/auth/', include('apps.auth.urls')),
     path('api/v1/tasks/', include('apps.tasks.urls')),
+    # Comments/Evidence nest under the same /tasks/ prefix but live in their own
+    # apps -- Django tries each include() at a shared prefix in order until one matches.
+    path('api/v1/tasks/', include('apps.comments.urls')),
+    path('api/v1/tasks/', include('apps.evidence.urls')),
     path('api/v1/labels/', include('apps.labels.urls')),
+    path('api/v1/tenant/', include('apps.tenants.urls')),
+    path('api/v1/upload/presign/', EvidencePresignView.as_view(), name='evidence-presign'),
+    path('api/v1/upload/voice-presign/', VoicePresignView.as_view(), name='voice-presign'),
 ]

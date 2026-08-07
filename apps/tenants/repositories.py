@@ -1,5 +1,21 @@
 from apps.common.exceptions import NotFoundError
-from apps.tenants.models import TenantMembership
+from apps.tenants.models import Department, Tenant, TenantMembership
+
+
+class TenantRepository:
+    @staticmethod
+    def get_with_counts(tenant_id) -> Tenant:
+        """For GET /tenant. Three simple queries rather than one annotated query --
+        TenantMembership's composite PK (tenant, user) makes Count(..., distinct=True)
+        raise when combined with a second to-many annotation in the same query, and
+        this is a single-row admin lookup, not a list, so there's no N+1 to worry about."""
+        try:
+            tenant = Tenant.objects.get(id=tenant_id)
+        except Tenant.DoesNotExist:
+            raise NotFoundError("Tenant", tenant_id) from None
+        tenant.member_count_annotated = TenantMembership.objects.filter(tenant_id=tenant_id).count()
+        tenant.dept_count_annotated = Department.objects.filter(tenant_id=tenant_id).count()
+        return tenant
 
 
 class MembershipRepository:

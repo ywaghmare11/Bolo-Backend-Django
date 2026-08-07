@@ -8,7 +8,7 @@ class TaskAdmin(admin.ModelAdmin):
     list_display = (
         "id", "title", "tenant", "assigner", "assignee", "status",
         "acceptance_status", "priority", "due_date", "main_label",
-        "assignee_label", "is_archived", "parent_task",
+        "assignee_label", "is_archived", "evidence_required", "parent_task",
     )
     search_fields = ("title",)
     list_filter = ("tenant", "status", "priority", "is_archived")

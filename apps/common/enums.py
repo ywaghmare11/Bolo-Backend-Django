@@ -103,6 +103,10 @@ class AuditAction(models.TextChoices):
     MEMBER_ADDED = "MEMBER_ADDED", "Member Added"
     MEMBER_REMOVED = "MEMBER_REMOVED", "Member Removed"
     MEMBERS_BULK_IMPORTED = "MEMBERS_BULK_IMPORTED", "Members Bulk Imported"
+    # Comment
+    COMMENT_CREATED = "COMMENT_CREATED", "Comment Created"
+    COMMENT_UPDATED = "COMMENT_UPDATED", "Comment Updated"
+    COMMENT_DELETED = "COMMENT_DELETED", "Comment Deleted"
 
 
 class NotificationType(models.TextChoices):

@@ -2,7 +2,7 @@
 
 > **How code must be written in this repo.** Read alongside `CLAUDE.md`.
 > This is a Python/Django port of the original Node/Express/Prisma `bolo-backend` guidelines. Principles are unchanged; syntax and tooling are translated.
-> **Last updated:** 2026-07-18 — Audit Logging section rewritten to match the original's generic middleware + route-config pattern (was manual `AuditService.log()` calls); `on_delete` exceptions updated to include `BroadcastAcknowledgement.broadcast`. Previously: initial scaffold (2026-07-14).
+> **Last updated:** 2026-08-03 — Security section's evidence-access line corrected from "signed URLs" to "backend-streamed, re-checked per request" (upstream 2026-08-03 sync + `apps/evidence` build, see `changelog.md` 2026-08-03 (4)). Previously: 2026-07-18 — Audit Logging section rewritten to match the original's generic middleware + route-config pattern (was manual `AuditService.log()` calls); `on_delete` exceptions updated to include `BroadcastAcknowledgement.broadcast`. Before that: initial scaffold (2026-07-14).
 
 ---
 
@@ -251,7 +251,7 @@ Same event → action mapping as the original backend (`TaskService.create()` �
 - Never trust `tenant_id` from the request body — always read from `request.tenant_id` (set by the custom JWT authentication class).
 - Sanitize user input at the serializer boundary (title, description, broadcast HTML via `bleach`).
 - File uploads: validate MIME type + extension server-side; never trust client-provided `Content-Type`.
-- Signed URLs for evidence access — never expose raw S3 bucket keys.
+- Evidence (and similar per-user-scoped files) served via a backend-streamed endpoint that re-checks access on every request (`apps/evidence/views.py:EvidenceFileView`) — **not** a pre-signed S3 URL persisted in a response, upstream-corrected 2026-08-03: a pre-signed URL is a bearer credential the moment it's handed to a client, valid for its full TTL regardless of later access changes. Never expose raw S3 bucket keys either way.
 - Never log PII (see Logging).
 - Dependency scanning: `pip-audit` (or `safety`) in CI, block deploys on critical CVEs.
 

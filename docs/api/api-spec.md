@@ -747,24 +747,36 @@ Fires EVIDENCE_ATTACHED notification to the other party.
 
 ### GET /tasks/:id/evidence — list evidence
 
-**Access:** `requireAuth` + must be assigner or assignee. File URLs are pre-signed S3 read URLs (expire in 1 hour).
+**Access:** `requireAuth` + must be assigner or assignee.
+
+> **Changed (bolo-backend-django sync 2026-08-03):** `fileUrl` is no longer a pre-signed S3 read URL. It's now an **app-relative path** to the streaming endpoint below (`/tasks/{id}/evidence/{eid}/file`) — a pre-signed URL is a bearer credential the moment it's put in a JSON response, valid for its full TTL for whoever holds it; the streaming endpoint re-checks access on every request instead.
 
 ```json
 Response 200:
-{ "data": [ { "id": "uuid", "fileUrl": "https://...", "fileName": "...", "fileType": "PDF", "caption": "...", "uploaderName": "...", "createdAt": "..." } ] }
+{ "data": [ { "id": "uuid", "fileUrl": "/tasks/{id}/evidence/{eid}/file", "fileName": "...", "fileType": "PDF", "caption": "...", "uploaderName": "...", "createdAt": "..." } ] }
 ```
+
+---
+
+### GET /tasks/:id/evidence/:eid/file — stream evidence file (new, bolo-backend-django sync 2026-08-03)
+
+**Access:** `requireAuth` + must be assigner or assignee. Streams the S3 object server-side; re-checked on every request rather than baked into a signed URL.
+
+**Errors:** 401 · 403 · 404 · 500
 
 ---
 
 ### DELETE /tasks/:id/evidence/:eid
 
-**Access:** Caller must be the uploader (`uploaderId`) or the assigner. Deletes from S3 and DB.
+**Access:** **Caller must be the uploader (`uploaderId`) only** — **narrowed (bolo-backend-django sync 2026-08-03)**, was previously uploader-or-assigner. Matches `Comment`'s existing author-only delete rule. Deletes from S3 and DB.
 
 ```json
 Response 200: { "data": null, "message": "Evidence removed" }
 ```
 
 **Errors:** 401 · 403 · 404 · 500
+
+**Note:** `.xls` (legacy binary Excel) is now accepted alongside `.xlsx` for evidence uploads (bolo-backend-django sync 2026-08-03).
 
 ---
 
@@ -1574,45 +1586,90 @@ Response 200:
 
 ## 13. Search
 
-Full-text across all entities the user can access, powered by OpenSearch.
+> **Rewritten 2026-08-03 sync — supersedes the previous 2026-07-23 revision of this section.** That revision (a single `GET /search` endpoint, described in `docs/api/global-search-ai-contract.md`) was itself already superseded in the original repo's actual code by **2026-08-01** (commit splitting Global Search into two paginated endpoints), but the upstream **doc** files (`bolo-backend`'s `docs/api/api-spec.md` and `global-search-ai-contract.md`) were never updated to match — they still describe the pre-split single-endpoint shape as of this sync. The contract below was verified directly against `bolo-backend`'s current source (`src/routes/search.routes.ts`, `src/controllers/search/{searchTasks,searchStickies}.controller.ts`, `src/services/search/globalSearch.service.ts`, `src/repositories/SearchRepository.ts`, `src/search/searchClassify.ts`), not against the (stale) upstream doc prose. Flag this drift back to whoever maintains `bolo-backend`'s docs — their own contract docs are behind their own code.
 
-### GET /search
+Scoped to exactly **two** result types — Task/Subtask and Sticky Note — not "every entity the user can access." A person's name in the query is a match field (surfaces tasks where that person is assigner/assignee), never a third result type. Powered by PostgreSQL + a standalone AI query-understanding layer (OpenAI `gpt-4o-mini`), not OpenSearch — see `docs/api/global-search-ai-contract.md` for the full design rationale.
 
-**Access:** `requireAuth` — results scoped to `tenantId` + entities the user is permitted to see.
+### GET /search/tasks
+
+**Access:** `requireAuth` — scoped to `tenantId` + (`assignerId = userId` OR `assigneeId = userId`), same visibility as the task list views. `Draft`/`Cancelled`/`Done_D` (archived) tasks **are** included by design — unlike the default Assigned/Delegated views, search does not hide them.
 
 ```
-GET /api/v1/search?q=NAAC&type=task&page=1&limit=20
+GET /api/v1/search/tasks?q=NAAC&source=typed&page=1&limit=10
 ```
 
 | Param | Required | Values |
 |---|---|---|
-| `q` | yes | search string (min 2 chars) |
-| `type` | no | `task` \| `sticky_note` \| `broadcast` \| `comment` — omit to search all |
+| `q` | yes | search string, 3–100 chars |
+| `source` | no | `typed` \| `voice` — default `typed`; lets the AI layer apply voice-specific correction (e.g. transliterate a Devanagari mis-transcription back to Latin script before matching) |
+| `page` | no | positive int, default 1 |
+| `limit` | no | 1–50, default 10 |
 
 ```json
 Response 200:
 {
+  "query": "NAAC",
+  "interpretedQuery": "corrected term or null",
+  "entityScope": "task",
   "data": [
     {
-      "entityType": "TASK",
       "id": "uuid",
       "title": "Submit NAAC self-study report",
-      "snippet": "...include sections A1 through <mark>NAAC</mark> criteria...",
       "status": "IN_PROGRESS",
-      "dueDate": "2026-06-30T17:00:00Z"
-    },
-    {
-      "entityType": "STICKY_NOTE",
-      "id": "uuid",
-      "snippet": "Prepare <mark>NAAC</mark> agenda for staff meeting",
-      "dueAt": "2026-06-21T09:00:00Z"
+      "priority": "P2",
+      "dueDate": "2026-06-30T17:00:00Z",
+      "parentTaskId": null,
+      "assigneeId": "uuid",
+      "assigneeName": "Prof. Asha Nair",
+      "assignerId": "uuid",
+      "assignerName": "Dr. Kamal Sethi",
+      "mainLabelId": "uuid",
+      "mainLabelName": "NAAC Cycle 4",
+      "assigneeLabelId": null,
+      "assigneeLabelName": null,
+      "latestComment": null
     }
   ],
-  "pagination": { "page": 1, "limit": 20, "total": 4 }
+  "pagination": { "page": 1, "limit": 10, "total": 1 }
 }
 ```
 
-**Errors:** 400 (q too short) · 401 · 500
+- `interpretedQuery` is populated only when the AI/fuzzy layer meaningfully corrected the raw query (a typo, a mis-transcribed name); `null` when the raw query already matched. Powers a "Showing results for X" hint client-side.
+- `assigneeLabelName` (private label) is privacy-scoped — only ever populated when the caller **is** that task's assignee, `null` otherwise; never leaks to the assigner.
+- `latestComment` is `{id, authorId, authorName, text, isEdited, createdAt}` or `null` — the comment text itself is not searched (out of scope, see below), only surfaced on an already-matched row.
+
+**Errors:** 400 `VALIDATION_ERROR` (`q` under 3 or over 100 chars, or missing; `limit` over 50) · 401 · 500
+
+### GET /search/stickies
+
+**Access:** `requireAuth` — scoped to `userId = caller` only. Strictly private, no tenant join.
+
+```
+GET /api/v1/search/stickies?q=agenda&source=typed&page=1&limit=10
+```
+
+Same query params as `/search/tasks`.
+
+```json
+Response 200:
+{
+  "query": "agenda",
+  "interpretedQuery": null,
+  "entityScope": "sticky",
+  "data": [
+    { "id": "uuid", "text": "Prepare NAAC agenda for staff meeting", "dueAt": "2026-06-21T09:00:00Z", "isPinned": false, "createdAt": "2026-06-18T10:00:00Z", "colorCode": "#FEF3C7" }
+  ],
+  "pagination": { "page": 1, "limit": 10, "total": 1 }
+}
+```
+
+**Errors:** same as `/search/tasks`.
+
+**How it works:** both endpoints run the query through a standalone AI module (`bolo-backend/src/search/searchClassify.ts` — deliberately independent of the voice-command classifier in `voice/intent.js`, so nothing here can regress that flow), cached per `(query, source, userId, tenantId)` so both endpoints agree on `interpretedQuery`/`entityScope` regardless of which is called first. It extracts typo-corrected keywords, resolves any person name against the real tenant roster (never invents one — ties widen to an OR across every tied candidate's **id**, never guessed), detects `status`/`priority`/`due` filters, and narrows to task-only or sticky-only if the query implies it. A deterministic Levenshtein-distance fallback catches name/label mis-hearings the LLM doesn't reliably self-correct. If the AI call fails or is unavailable, search falls back to a raw keyword match rather than erroring. Pagination is ordered with an `id` tiebreaker on top of the primary/secondary sort — load-bearing for stable pagination when rows tie on timestamp.
+
+**Confirmed out of scope for V1:** `Comment.text` (as search-match text, not display), `Evidence.fileName`, `VoiceRecording.rawTranscript` — each has its own visibility rules to get right; deferred as a dedicated follow-up if ever needed, not silently expanded.
+
+**Navigation on click (frontend):** Task/Subtask result → task detail view (a Subtask uses its own id — it's already a fully addressable Task row, no parent/highlight needed). Sticky result → Sticky Wall.
 
 ---
 
@@ -2239,6 +2296,60 @@ Response 200:
 
 ---
 
+## 21. Jargon Words *(new, bolo-backend-django sync 2026-08-03)*
+
+Grounds the voice-recognition and Global Search query-understanding layers against vertical-specific jargon (e.g. "NAAC", "MGT-7") a general-purpose model wouldn't otherwise get right. **Not tenant-scoped** — one shared dictionary per `Vertical` (`EDUCATION`/`CA_CS`). Gated by an email allow-list (`JARGON_ADMIN_EMAILS` equivalent), **not** `PlatformAdmin` and **not** `OrgRoleLevel` — a distinct admin concept from either. Deliberately **not audit-logged** (no route-config row upstream, by design).
+
+### GET /jargon-words — list
+
+```
+GET /api/v1/jargon-words?vertical=EDUCATION&search=&isActive=&page=&limit=
+```
+
+`limit` capped at 200 (default 50). `search` matches `term` (case-insensitive contains) or exact `variants` array-contains.
+
+```json
+Response 200:
+{ "data": [ { "id": "uuid", "vertical": "EDUCATION", "term": "NAAC", "variants": ["nack"], "isActive": true, "createdBy": "uuid", "createdAt": "...", "updatedAt": "..." } ], "pagination": { "page": 1, "limit": 50, "total": 1 } }
+```
+
+### POST /jargon-words — create
+
+```json
+Request: { "vertical": "EDUCATION", "term": "NAAC", "variants": ["nack"], "isActive": true }
+Response 201: { "data": { ... }, "message": "Jargon word created" }
+```
+
+`term` max 100 chars. Case-insensitive duplicate check on `(vertical, term)` — app-level pre-check plus a DB unique-constraint catch, `409 DUPLICATE_JARGON_TERM`.
+
+### PATCH /jargon-words/:id — partial update
+
+Re-checks the duplicate constraint only if `term` actually changes.
+
+### DELETE /jargon-words/:id
+
+```json
+Response 200: { "data": null, "message": "Jargon word deleted" }
+```
+
+### GET /jargon-words/template?vertical=EDUCATION — download Excel template
+
+Returns an `.xlsx` file (`Content-Disposition: attachment`), filename varies by vertical (e.g. `education-institute-jargon-template.xlsx` / `ca-firm-jargon-template.xlsx`).
+
+### POST /jargon-words/bulk-import?vertical=EDUCATION — bulk import
+
+Accepts **either** `multipart/form-data` file upload (`.xlsx`/`.xls`, field `file`) **or** a JSON body `{ "words": [...] }`.
+
+```json
+Response 200: { "data": { "created": 12, "updated": 3, "skipped": 1, "errors": [ { "term": "...", "reason": "..." } ] } }
+```
+
+Dedup within the file is case-insensitive (last row wins; earlier duplicate rows reported as skipped/errors); upserts by `(vertical, term)`.
+
+**Errors (all endpoints):** 400 `VALIDATION_ERROR` · 401 · 403 (not on the admin allow-list) · 404 · 409 `DUPLICATE_JARGON_TERM` · 500
+
+---
+
 ## Appendix — Route × Middleware Matrix
 
 | Route | Auth | Role guard | Ownership check |
@@ -2260,28 +2371,36 @@ Response 200:
 | DELETE /tasks/:id/comments/:cid | requireAuth | none | service: must be authorId |
 | POST /upload/presign | requireAuth | none | service: assigner or assignee |
 | POST /tasks/:id/evidence | requireAuth | none | service: assigner or assignee |
-| DELETE /tasks/:id/evidence/:eid | requireAuth | none | service: uploaderId or assignerId |
+| GET /tasks/:id/evidence/:eid/file | requireAuth | none | service: assigner or assignee (backend-streamed, not pre-signed URL) |
+| DELETE /tasks/:id/evidence/:eid | requireAuth | none | service: uploaderId only (narrowed — was uploaderId or assignerId) |
 | GET/POST/PATCH/DELETE /labels | requireAuth | none | POST: any; PATCH/DELETE: creatorId |
 | GET/POST/PATCH /sticky-notes | requireAuth | none | service: userId = me |
 | POST /sticky-notes/:id/promote | requireAuth | none | service: userId = me |
-| GET /broadcast-notices | requireAuth | none | audience match in service |
+| GET /broadcast-notices?view=received\|sent | requireAuth | none | audience match (received) or senderId (sent, excludes DRAFT) in service |
 | POST /broadcast-notices | requireAuth | none | service: canBroadcast = true |
+| PATCH /broadcast-notices/:id | requireAuth | none | service: senderId only; blocked once expired |
+| DELETE /broadcast-notices/:id | requireAuth | none | service: senderId only |
 | POST /broadcast-notices/:id/publish | requireAuth | none | service: senderId + canBroadcast |
+| GET /broadcast-notices/:id/image | requireAuth | none | service: sender (any status) or active audience member (backend-streamed, not pre-signed URL) |
 | POST /broadcast-notices/:id/ack | requireAuth | none | service: audience member |
 | GET /broadcast-notices/:id/ack-count | requireAuth | none | service: senderId |
 | GET /notifications | requireAuth | none | service: recipientId = me |
 | PATCH /notifications/:id/read | requireAuth | none | service: recipientId = me |
 | POST /notifications/mark-all-read | requireAuth | none | service: recipientId = me |
 | GET /audit-log | requireAuth | requireOrgRole(['TOP']) | service: or assignerId of entity |
-| GET /search | requireAuth | none | OpenSearch filtered by tenantId + visibility |
+| GET /search/tasks, GET /search/stickies | requireAuth | none | PostgreSQL + AI query-understanding layer, scoped per-bucket (§13) — not OpenSearch |
 | POST /voice/dispatch | requireAuth | none | service: same as target endpoint |
 | GET /me, PATCH /me | requireAuth | none | JWT userId |
 | POST /upload/profile-picture-presign, PATCH/DELETE /me/profile-picture | requireAuth | none | JWT userId; always targets caller's own picture |
+| GET /users/:userId/profile-picture/file | requireAuth | none | any tenant member (backend-streamed, not pre-signed URL) |
 | GET /tenant | requireAuth | requireOrgRole(['TOP']) | tenantId from JWT |
 | GET /tenant/members | requireAuth | none | tenantId from JWT |
 | GET /tenant/roles | requireAuth | none | tenantId from JWT |
 | POST /tenant/members/invite | requireAuth | requireOrgRole(['TOP']) | tenantId from JWT |
 | DELETE /tenant/members/:userId | requireAuth | requireOrgRole(['TOP']) | cannot remove self |
+| POST /tenant/members/:userId/reactivate | requireAuth | requireOrgRole(['TOP']) | service: user must belong to tenant, no existing active membership |
+| POST /platform-admin/tenants/:tenantId/members/:userId/reactivate | platformAdmin auth | none | cross-tenant variant, same validation |
+| GET/POST/PATCH/DELETE /jargon-words, GET /jargon-words/template, POST /jargon-words/bulk-import | requireAuth | requireJargonAdmin (email allow-list, not OrgRoleLevel) | not tenant-scoped — one dictionary per Vertical |
 | GET /analytics/members | requireAuth | requireOrgRole(['TOP','MID']) | service: MID scoped to own dept |
 | GET /departments | requireAuth | none | tenantId from JWT |
 | GET /departments/:id | requireAuth | none | service: tenantId match (404 if foreign tenant) |

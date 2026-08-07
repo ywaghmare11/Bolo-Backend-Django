@@ -5,13 +5,18 @@ from apps.common.exceptions import ValidationError
 from apps.common.pagination import BoloPageNumberPagination
 from apps.common.responses import success_response
 from apps.tasks.serializers import (
+    SubtaskCreateSerializer,
     TaskCreateSerializer,
     TaskDetailSerializer,
     TaskListItemSerializer,
     TaskUpdateSerializer,
+    VoiceAudioConfirmSerializer,
+    VoicePresignSerializer,
     serialize_task_created,
+    serialize_voice_recording,
 )
 from apps.tasks.services import TaskService
+from apps.tasks.voice_recording_service import VoiceRecordingService
 
 
 def _parse_bool(value, default=False):
@@ -109,3 +114,101 @@ class TaskRemindView(APIView):
     def post(self, request, task_id):
         TaskService.remind_task(request.user, request.tenant_id, task_id)
         return success_response(None, "Reminder sent to assignee")
+
+
+class SubtaskListCreateView(APIView):
+    def post(self, request, task_id):
+        serializer = SubtaskCreateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        subtask = TaskService.create_subtask(
+            request.user, request.tenant_id, task_id, **serializer.validated_data,
+        )
+        return success_response(serialize_task_created(subtask), "Subtask created", status=201)
+
+
+class SubtaskDetailView(APIView):
+    def patch(self, request, task_id, subtask_id):
+        if "title" in request.data:
+            raise ValidationError("Task title cannot be changed after creation", code="TITLE_IMMUTABLE")
+
+        TaskService.get_subtask_or_404(request.tenant_id, task_id, subtask_id)
+        serializer = TaskUpdateSerializer(data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+
+        subtask = TaskService.update_task(
+            request.user, request.tenant_id, subtask_id, serializer.validated_data,
+        )
+        return success_response(serialize_task_created(subtask), "Subtask updated")
+
+    def delete(self, request, task_id, subtask_id):
+        TaskService.get_subtask_or_404(request.tenant_id, task_id, subtask_id)
+        TaskService.delete_task(request.user, request.tenant_id, subtask_id)
+        return success_response(None, "Subtask deleted")
+
+
+class SubtaskAcceptView(APIView):
+    def post(self, request, task_id, subtask_id):
+        TaskService.get_subtask_or_404(request.tenant_id, task_id, subtask_id)
+        subtask = TaskService.accept_task(request.user, request.tenant_id, subtask_id)
+        return success_response(
+            {"status": subtask.status, "acceptedAt": subtask.accepted_at.isoformat()},
+            "Subtask accepted",
+        )
+
+
+class SubtaskDoneAView(APIView):
+    def post(self, request, task_id, subtask_id):
+        TaskService.get_subtask_or_404(request.tenant_id, task_id, subtask_id)
+        subtask = TaskService.mark_done_a(request.user, request.tenant_id, subtask_id)
+        return success_response(
+            {"status": subtask.status}, "Marked as complete -- awaiting delegator confirmation",
+        )
+
+
+class SubtaskDoneDView(APIView):
+    def post(self, request, task_id, subtask_id):
+        TaskService.get_subtask_or_404(request.tenant_id, task_id, subtask_id)
+        subtask = TaskService.mark_done_d(request.user, request.tenant_id, subtask_id)
+        return success_response(
+            {"status": subtask.status, "isArchived": subtask.is_archived}, "Subtask completed",
+        )
+
+
+class SubtaskCancelView(APIView):
+    def post(self, request, task_id, subtask_id):
+        TaskService.get_subtask_or_404(request.tenant_id, task_id, subtask_id)
+        subtask = TaskService.cancel_task(request.user, request.tenant_id, subtask_id)
+        return success_response({"status": subtask.status}, "Subtask cancelled")
+
+
+class VoicePresignView(APIView):
+    def post(self, request):
+        serializer = VoicePresignSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        data = VoiceRecordingService.presign_audio_upload(
+            request.user, request.tenant_id, **serializer.validated_data,
+        )
+        return success_response(data, "Upload URL generated")
+
+
+class VoiceRecordingDetailView(APIView):
+    def get(self, request, task_id):
+        voice_recording = VoiceRecordingService.get_transcript(request.user, request.tenant_id, task_id)
+        return success_response(serialize_voice_recording(voice_recording), "OK")
+
+
+class VoiceRecordingAudioView(APIView):
+    def get(self, request, task_id):
+        data = VoiceRecordingService.get_playback_url(request.user, request.tenant_id, task_id)
+        return success_response(data, "OK")
+
+    def patch(self, request, task_id):
+        serializer = VoiceAudioConfirmSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        voice_recording = VoiceRecordingService.confirm_audio(
+            request.user, request.tenant_id, task_id, **serializer.validated_data,
+        )
+        return success_response({"hasAudio": bool(voice_recording.audio_url)}, "Audio linked")

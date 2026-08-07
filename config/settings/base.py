@@ -49,6 +49,12 @@ MIDDLEWARE = [
     "django.contrib.auth.middleware.AuthenticationMiddleware",
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
+    # Last -- generic audit-log observer (CLAUDE.md Architecture Rules point 8). Does
+    # its own URL resolution against apps.common.audit_route_config.AUDIT_ROUTE_CONFIG
+    # rather than reading DRF-specific request attributes (request.tenant_id/request.user
+    # are set on DRF's internal Request wrapper inside APIView.dispatch(), not on the
+    # underlying HttpRequest this middleware sees -- they never propagate back out here).
+    "apps.common.audit_middleware.AuditLogMiddleware",
 ]
 
 ROOT_URLCONF = "config.urls"
@@ -115,7 +121,40 @@ REST_FRAMEWORK = {
     "DEFAULT_PAGINATION_CLASS": "apps.common.pagination.BoloPageNumberPagination",
     "PAGE_SIZE": 20,
     "EXCEPTION_HANDLER": "config.exception_handler.bolo_exception_handler",
+    # Only apply throttling where a view opts in via throttle_classes/throttle_scope --
+    # not a DEFAULT_THROTTLE_CLASSES global, since only the OTP-request endpoint needs it today.
+    "DEFAULT_THROTTLE_RATES": {
+        # Per-IP burst guard, layered on top of AuthService.request_otp's existing
+        # per-email 60s resend cooldown (a DB timestamp check -- see apps/auth/services.py).
+        # That check alone doesn't stop someone cycling through many emails from one IP;
+        # this rate is enforced in Redis so it holds across multiple gunicorn workers/processes,
+        # unlike DRF's in-memory cache which is per-process and useless beyond one worker.
+        "otp_request": "5/min",
+    },
 }
+
+# Redis-backed cache -- DRF's ScopedRateThrottle reads/writes through Django's default
+# cache alias (django.core.cache.cache), so pointing "default" at Redis here is what
+# makes the throttle actually shared across processes. Also the shared cache-aside
+# backend for future read-heavy endpoints (Phase 12).
+CACHES = {
+    "default": {
+        "BACKEND": "django_redis.cache.RedisCache",
+        "LOCATION": env("REDIS_URL"),
+        "OPTIONS": {"CLIENT_CLASS": "django_redis.client.DefaultClient"},
+    },
+}
+
+# Celery -- shares the same Redis instance as CACHES above (broker + result backend).
+# Used today for the fire-and-forget audit-log write (apps/common/audit_middleware.py);
+# CELERY_TASK_ALWAYS_EAGER lets config/settings/test.py run tasks synchronously so tests
+# don't need a running worker.
+CELERY_BROKER_URL = env("REDIS_URL")
+CELERY_RESULT_BACKEND = env("REDIS_URL")
+CELERY_ACCEPT_CONTENT = ["json"]
+CELERY_TASK_SERIALIZER = "json"
+CELERY_RESULT_SERIALIZER = "json"
+CELERY_TASK_ALWAYS_EAGER = env.bool("CELERY_TASK_ALWAYS_EAGER", default=False)
 
 SIMPLE_JWT = {
     "ACCESS_TOKEN_LIFETIME": timedelta(minutes=15),
@@ -133,3 +172,9 @@ EMAIL_BACKEND = env("EMAIL_BACKEND", default="django.core.mail.backends.console.
 # SES_FROM_EMAIL is present-but-empty in .env.example (SES not wired up yet) --
 # `or` guards against that in addition to the truly-unset case.
 DEFAULT_FROM_EMAIL = env("SES_FROM_EMAIL", default="") or "noreply@bolo.local"
+
+# Evidence file storage -- IAM-role-only via the default boto3 credential provider
+# chain (see apps/common/storage.py), no separate access-key secret to manage, same
+# pattern as SES above.
+AWS_S3_BUCKET_NAME = env("S3_BUCKET_NAME", default="")
+AWS_S3_REGION = env("AWS_S3_REGION", default="ap-south-1")

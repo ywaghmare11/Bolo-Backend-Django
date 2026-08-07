@@ -28,6 +28,10 @@ from apps.common.enums import AuditAction
 
 TASK_TRACKED_FIELDS = ["status", "priority", "due_date", "assignee_id", "main_label_id", "is_archived"]
 USER_TRACKED_FIELDS = ["last_login_at", "last_logout_at"]
+# "text" deliberately excluded -- guidelines.md bans comment text from before/after.
+COMMENT_TRACKED_FIELDS = ["is_edited"]
+# "file_name"/"caption" deliberately excluded -- same structural-fields-only principle.
+EVIDENCE_TRACKED_FIELDS = ["file_type"]
 
 
 def _url_kwarg(name):
@@ -74,6 +78,18 @@ _TASK_ROW = {
     "tracked_fields": TASK_TRACKED_FIELDS,
 }
 
+_COMMENT_ROW = {
+    "entity_type": "COMMENT",
+    "model": "comments.Comment",
+    "tracked_fields": COMMENT_TRACKED_FIELDS,
+}
+
+_EVIDENCE_ROW = {
+    "entity_type": "DOCUMENT",
+    "model": "evidence.Evidence",
+    "tracked_fields": EVIDENCE_TRACKED_FIELDS,
+}
+
 AUDIT_ROUTE_CONFIG = {
     ("POST", "task-list-create"): {
         **_TASK_ROW,
@@ -114,6 +130,74 @@ AUDIT_ROUTE_CONFIG = {
     # apps/labels routes: excluded -- no AuditAction values exist for label events yet
     # (CLAUDE.md's Notifications rule says "add the event type before wiring the call
     # site"; the same principle applies here rather than inventing an enum value).
+    ("POST", "subtask-create"): {
+        **_TASK_ROW,
+        "id_resolver_post": _response_data_field("id"),
+        "action": AuditAction.SUBTASK_CREATED,
+    },
+    ("PATCH", "subtask-detail"): {
+        **_TASK_ROW,
+        "id_resolver": _url_kwarg("subtask_id"),
+        "action": AuditAction.SUBTASK_UPDATED,
+    },
+    ("DELETE", "subtask-detail"): {
+        **_TASK_ROW,
+        "id_resolver": _url_kwarg("subtask_id"),
+        "action": AuditAction.SUBTASK_DELETED,
+    },
+    # accept/done-a/done-d/cancel all map to SUBTASK_UPDATED -- unlike Task, the
+    # schema has no granular SUBTASK_STATUS_CHANGED action, matching upstream.
+    ("POST", "subtask-accept"): {
+        **_TASK_ROW,
+        "id_resolver": _url_kwarg("subtask_id"),
+        "action": AuditAction.SUBTASK_UPDATED,
+    },
+    ("POST", "subtask-done-a"): {
+        **_TASK_ROW,
+        "id_resolver": _url_kwarg("subtask_id"),
+        "action": AuditAction.SUBTASK_UPDATED,
+    },
+    ("POST", "subtask-done-d"): {
+        **_TASK_ROW,
+        "id_resolver": _url_kwarg("subtask_id"),
+        "action": AuditAction.SUBTASK_UPDATED,
+    },
+    ("POST", "subtask-cancel"): {
+        **_TASK_ROW,
+        "id_resolver": _url_kwarg("subtask_id"),
+        "action": AuditAction.SUBTASK_UPDATED,
+    },
+    # Unlike the original Node route (a single generic `:id` param shared by the
+    # task-detail and comment-detail routes, requiring an explicit override), this
+    # app's nested comment routes use a distinctly-named `comment_id` kwarg, so
+    # `_url_kwarg` already resolves the right id with no override needed.
+    ("POST", "comment-list-create"): {
+        **_COMMENT_ROW,
+        "id_resolver_post": _response_data_field("id"),
+        "action": AuditAction.COMMENT_CREATED,
+    },
+    ("PATCH", "comment-detail"): {
+        **_COMMENT_ROW,
+        "id_resolver": _url_kwarg("comment_id"),
+        "action": AuditAction.COMMENT_UPDATED,
+    },
+    ("DELETE", "comment-detail"): {
+        **_COMMENT_ROW,
+        "id_resolver": _url_kwarg("comment_id"),
+        "action": AuditAction.COMMENT_DELETED,
+    },
+    # Distinctly-named `evidence_id` kwarg (not a shared generic `:id`) means no
+    # idParam override is needed here, unlike the original Node route.
+    ("POST", "evidence-list-create"): {
+        **_EVIDENCE_ROW,
+        "id_resolver_post": _response_data_field("id"),
+        "action": AuditAction.DOCUMENT_UPLOADED,
+    },
+    ("DELETE", "evidence-detail"): {
+        **_EVIDENCE_ROW,
+        "id_resolver": _url_kwarg("evidence_id"),
+        "action": AuditAction.DOCUMENT_DELETED,
+    },
     ("POST", "auth-verify-otp"): {
         "entity_type": "USER",
         "model": "users.User",

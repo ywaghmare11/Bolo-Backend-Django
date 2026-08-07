@@ -4,7 +4,7 @@ from django.db.models import Case, Count, F, Q, When
 from apps.comments.models import Comment
 from apps.common.enums import TaskStatus
 from apps.common.exceptions import NotFoundError
-from apps.tasks.models import Task
+from apps.tasks.models import Task, VoiceRecording
 
 SORT_ORDER = (
     Case(When(status=TaskStatus.OVERDUE, then=0), default=1),
@@ -42,6 +42,17 @@ class TaskRepository:
             ).get(id=task_id, tenant_id=tenant_id)
         except Task.DoesNotExist:
             raise NotFoundError("Task", task_id) from None
+
+    @staticmethod
+    def get_subtask_by_id(subtask_id, parent_task_id, tenant_id) -> Task:
+        """Validates the nested-route relationship (a subtask id under the wrong
+        parent in the URL is treated as not found, not just forbidden)."""
+        try:
+            return Task.objects.select_related(
+                "assigner", "assignee", "main_label", "assignee_label",
+            ).get(id=subtask_id, parent_task_id=parent_task_id, tenant_id=tenant_id)
+        except Task.DoesNotExist:
+            raise NotFoundError("Subtask", subtask_id) from None
 
     @staticmethod
     def update(task: Task, **fields) -> Task:
@@ -143,3 +154,22 @@ class TaskRepository:
     @staticmethod
     def latest_comment(task: Task):
         return task.comments.select_related("author").order_by("-created_at").first()
+
+
+class VoiceRecordingRepository:
+    @staticmethod
+    def create(**fields) -> VoiceRecording:
+        return VoiceRecording.objects.create(**fields)
+
+    @staticmethod
+    def get_by_task_id(task_id, tenant_id) -> VoiceRecording:
+        try:
+            return VoiceRecording.objects.get(task_id=task_id, tenant_id=tenant_id)
+        except VoiceRecording.DoesNotExist:
+            raise NotFoundError("VoiceRecording", task_id) from None
+
+    @staticmethod
+    def update_audio_url(voice_recording: VoiceRecording, audio_url: str) -> VoiceRecording:
+        voice_recording.audio_url = audio_url
+        voice_recording.save()
+        return voice_recording

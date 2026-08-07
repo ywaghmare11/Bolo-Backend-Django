@@ -1,6 +1,19 @@
 from rest_framework import serializers
 
+from apps.comments.serializers import serialize_comment
 from apps.common.enums import Priority
+
+
+class VoiceRecordingInputSerializer(serializers.Serializer):
+    """Nested under TaskCreateSerializer's `voiceRecording` -- audioUrl is
+    deliberately not accepted here, added later via the presign/confirm flow."""
+
+    rawTranscript = serializers.CharField(source="raw_transcript")
+    language = serializers.CharField(required=False, allow_null=True, default=None)
+    durationSecs = serializers.FloatField(source="duration_secs", required=False, allow_null=True, default=None)
+    confidenceScore = serializers.FloatField(
+        source="confidence_score", required=False, allow_null=True, default=None,
+    )
 
 
 class TaskCreateSerializer(serializers.Serializer):
@@ -10,6 +23,10 @@ class TaskCreateSerializer(serializers.Serializer):
     priority = serializers.ChoiceField(choices=Priority.choices, required=False, default=Priority.P3)
     mainLabelId = serializers.UUIDField(source="main_label_id", required=False, allow_null=True, default=None)
     description = serializers.CharField(required=False, allow_blank=True, default="")
+    evidenceRequired = serializers.BooleanField(source="evidence_required", required=False, default=False)
+    voiceRecording = VoiceRecordingInputSerializer(
+        source="voice_recording", required=False, allow_null=True, default=None,
+    )
 
 
 class TaskUpdateSerializer(serializers.Serializer):
@@ -23,6 +40,16 @@ class TaskUpdateSerializer(serializers.Serializer):
     priority = serializers.ChoiceField(choices=Priority.choices, required=False)
     mainLabelId = serializers.UUIDField(source="main_label_id", required=False, allow_null=True)
     description = serializers.CharField(required=False, allow_blank=True)
+    evidenceRequired = serializers.BooleanField(source="evidence_required", required=False)
+
+
+class SubtaskCreateSerializer(serializers.Serializer):
+    title = serializers.CharField(max_length=255)
+    assigneeId = serializers.UUIDField(source="assignee_id")
+    dueDate = serializers.DateTimeField(source="due_date")
+    priority = serializers.ChoiceField(choices=Priority.choices, required=False, default=Priority.P3)
+    mainLabelId = serializers.UUIDField(source="main_label_id", required=False, allow_null=True, default=None)
+    description = serializers.CharField(required=False, allow_blank=True, default="")
 
 
 def serialize_task_created(task) -> dict:
@@ -35,18 +62,8 @@ def serialize_task_created(task) -> dict:
         "priority": task.priority,
         "dueDate": task.due_date.isoformat() if task.due_date else None,
         "parentTaskId": str(task.parent_task_id) if task.parent_task_id else None,
+        "evidenceRequired": task.evidence_required,
         "createdAt": task.created_at.isoformat(),
-    }
-
-
-def serialize_comment(comment) -> dict:
-    return {
-        "id": str(comment.id),
-        "authorId": str(comment.author_id),
-        "authorName": comment.author.name,
-        "text": comment.text,
-        "isEdited": comment.is_edited,
-        "createdAt": comment.created_at.isoformat(),
     }
 
 
@@ -73,6 +90,7 @@ def serialize_subtask_summary(subtask) -> dict:
         "assigneeName": subtask.assignee.name,
         "dueDate": subtask.due_date.isoformat() if subtask.due_date else None,
         "priority": subtask.priority,
+        "evidenceRequired": subtask.evidence_required,
     }
 
 
@@ -80,12 +98,29 @@ def serialize_voice_recording(vr) -> dict | None:
     if vr is None:
         return None
     return {
+        "id": str(vr.id),
         "rawTranscript": vr.raw_transcript,
         "language": vr.language,
         "durationSecs": vr.duration_secs,
         "confidenceScore": vr.confidence_score,
         "hasAudio": bool(vr.audio_url),
+        "carryVoiceRecording": vr.carry_voice_recording,
+        "createdAt": vr.created_at.isoformat(),
     }
+
+
+class VoicePresignSerializer(serializers.Serializer):
+    taskId = serializers.UUIDField(source="task_id")
+    filename = serializers.CharField(max_length=255, required=False, default="voice.webm")
+    contentType = serializers.ChoiceField(
+        source="content_type",
+        choices=["audio/webm", "audio/mp4", "audio/ogg", "audio/wav"],
+    )
+    durationSecs = serializers.FloatField(source="duration_secs", required=False, allow_null=True, default=None)
+
+
+class VoiceAudioConfirmSerializer(serializers.Serializer):
+    s3Key = serializers.CharField(source="s3_key")
 
 
 class TaskListItemSerializer(serializers.Serializer):
@@ -99,6 +134,7 @@ class TaskListItemSerializer(serializers.Serializer):
             "priority": instance.priority,
             "dueDate": instance.due_date.isoformat() if instance.due_date else None,
             "isArchived": instance.is_archived,
+            "evidenceRequired": instance.evidence_required,
             "parentTaskId": str(instance.parent_task_id) if instance.parent_task_id else None,
             "assignerId": str(instance.assigner_id),
             "assignerName": instance.assigner.name,
@@ -128,6 +164,7 @@ class TaskDetailSerializer(serializers.Serializer):
             "dueDate": task.due_date.isoformat() if task.due_date else None,
             "description": task.description,
             "isArchived": task.is_archived,
+            "evidenceRequired": task.evidence_required,
             "parentTaskId": str(task.parent_task_id) if task.parent_task_id else None,
             "acceptedAt": task.accepted_at.isoformat() if task.accepted_at else None,
             "assignerId": str(task.assigner_id),

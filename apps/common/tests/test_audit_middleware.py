@@ -138,6 +138,47 @@ class TestTaskAuditTrail:
 
 
 @pytest.mark.django_db
+class TestCommentAuditTrail:
+    def test_create_writes_comment_created_without_text(self, tenant, assigner, assignee):
+        task = TaskFactory(tenant_id=tenant.id, assigner=assigner, assignee=assignee)
+        client = _authed_client(assigner, tenant.id)
+        resp = client.post(
+            f"/api/v1/tasks/{task.id}/comments/", {"text": "Sensitive progress details"}, format="json",
+        )
+        comment_id = resp.data["data"]["id"]
+
+        log = AuditLog.objects.get(entity_type="COMMENT", entity_id=comment_id)
+        assert log.action == "COMMENT_CREATED"
+        assert log.before is None
+        # guidelines.md bans comment text from before/after -- only structural fields tracked.
+        assert "text" not in (log.after or {})
+        assert log.after == {"is_edited": False}
+
+    def test_edit_writes_comment_updated(self, tenant, assigner, assignee):
+        task = TaskFactory(tenant_id=tenant.id, assigner=assigner, assignee=assignee)
+        client = _authed_client(assigner, tenant.id)
+        resp = client.post(f"/api/v1/tasks/{task.id}/comments/", {"text": "First"}, format="json")
+        comment_id = resp.data["data"]["id"]
+
+        client.patch(f"/api/v1/tasks/{task.id}/comments/{comment_id}/", {"text": "Edited"}, format="json")
+
+        log = AuditLog.objects.get(entity_type="COMMENT", entity_id=comment_id, action="COMMENT_UPDATED")
+        assert log.before == {"is_edited": False}
+        assert log.after == {"is_edited": True}
+
+    def test_delete_writes_comment_deleted_with_null_after(self, tenant, assigner, assignee):
+        task = TaskFactory(tenant_id=tenant.id, assigner=assigner, assignee=assignee)
+        client = _authed_client(assigner, tenant.id)
+        resp = client.post(f"/api/v1/tasks/{task.id}/comments/", {"text": "First"}, format="json")
+        comment_id = resp.data["data"]["id"]
+
+        client.delete(f"/api/v1/tasks/{task.id}/comments/{comment_id}/")
+
+        log = AuditLog.objects.get(entity_type="COMMENT", entity_id=comment_id, action="COMMENT_DELETED")
+        assert log.after is None
+
+
+@pytest.mark.django_db
 class TestAuthAuditTrail:
     def test_login_writes_user_login(self, tenant):
         user = UserFactory(tenant=tenant, email="dean@abc.edu")

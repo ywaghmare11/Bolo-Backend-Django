@@ -1,3 +1,4 @@
+from django.db import transaction
 from django.utils import timezone
 
 from apps.common.enums import AcceptanceStatus, NotificationType, TaskStatus
@@ -5,7 +6,7 @@ from apps.common.exceptions import ConflictError, ForbiddenError, NotFoundError,
 from apps.labels.repositories import LabelRepository
 from apps.labels.services import LabelService
 from apps.notifications.services import dispatch_notification
-from apps.tasks.repositories import TaskRepository
+from apps.tasks.repositories import TaskRepository, VoiceRecordingRepository
 from apps.users.repositories import UserRepository
 
 
@@ -28,23 +29,40 @@ def _validate_owned_label(label_id, user, tenant_id):
 
 class TaskService:
     @staticmethod
-    def create_task(user, tenant_id, title, assignee_id, due_date, priority, main_label_id, description):
+    def create_task(
+        user, tenant_id, title, assignee_id, due_date, priority, main_label_id, description,
+        evidence_required=False, voice_recording=None,
+    ):
         assignee = _validate_same_tenant_assignee(assignee_id, tenant_id)
         _validate_owned_label(main_label_id, user, tenant_id)
 
         status = TaskStatus.OPEN if due_date else TaskStatus.DRAFT
 
-        task = TaskRepository.create(
-            tenant_id=tenant_id,
-            title=title,
-            assigner=user,
-            assignee=assignee,
-            status=status,
-            priority=priority,
-            due_date=due_date,
-            description=description,
-            main_label_id=main_label_id,
-        )
+        # tasks row + voice_recordings row (transcript only) in one transaction --
+        # api-spec.md §2 requires this; audio itself is a separate S3 upload after
+        # the response is returned, never inside this transaction.
+        with transaction.atomic():
+            task = TaskRepository.create(
+                tenant_id=tenant_id,
+                title=title,
+                assigner=user,
+                assignee=assignee,
+                status=status,
+                priority=priority,
+                due_date=due_date,
+                description=description,
+                main_label_id=main_label_id,
+                evidence_required=evidence_required,
+            )
+            if voice_recording is not None:
+                VoiceRecordingRepository.create(
+                    tenant_id=tenant_id,
+                    task=task,
+                    raw_transcript=voice_recording["raw_transcript"],
+                    language=voice_recording.get("language"),
+                    duration_secs=voice_recording.get("duration_secs"),
+                    confidence_score=voice_recording.get("confidence_score"),
+                )
 
         if status == TaskStatus.OPEN:
             dispatch_notification(
@@ -84,6 +102,8 @@ class TaskService:
             update_fields["priority"] = fields["priority"]
         if "description" in fields:
             update_fields["description"] = fields["description"]
+        if "evidence_required" in fields:
+            update_fields["evidence_required"] = fields["evidence_required"]
 
         if "due_date" in fields:
             update_fields["due_date"] = fields["due_date"]
@@ -92,13 +112,14 @@ class TaskService:
 
         task = TaskRepository.update(task, **update_fields)
 
+        is_subtask = task.parent_task_id is not None
         dispatch_notification(
             tenant_id=tenant_id,
             recipient=task.assignee,
-            type_=NotificationType.TASK_EDITED,
+            type_=NotificationType.SUBTASK_EDITED if is_subtask else NotificationType.TASK_EDITED,
             entity_type="task",
             entity_id=task.id,
-            message=f"{user.name} edited the task: {task.title}",
+            message=f"{user.name} edited the {'subtask' if is_subtask else 'task'}: {task.title}",
             actor_name=user.name,
             entity_title=task.title,
         )
@@ -145,17 +166,23 @@ class TaskService:
             raise ForbiddenError("You are not the assignee of this task")
         if task.status not in (TaskStatus.IN_PROGRESS, TaskStatus.OVERDUE):
             raise ValidationError("Task must be in progress to mark complete")
+        if task.evidence_required and not task.evidence.exists():
+            raise ValidationError(
+                "At least one evidence file must be uploaded before marking this task complete",
+                code="EVIDENCE_REQUIRED",
+            )
 
         task.status = TaskStatus.DONE_A
         task.save()
 
+        is_subtask = task.parent_task_id is not None
         dispatch_notification(
             tenant_id=tenant_id,
             recipient=task.assigner,
-            type_=NotificationType.TASK_DONE_A,
+            type_=NotificationType.SUBTASK_DONE_A if is_subtask else NotificationType.TASK_DONE_A,
             entity_type="task",
             entity_id=task.id,
-            message=f"{user.name} marked the task complete: {task.title}",
+            message=f"{user.name} marked the {'subtask' if is_subtask else 'task'} complete: {task.title}",
             actor_name=user.name,
             entity_title=task.title,
         )
@@ -168,23 +195,35 @@ class TaskService:
             raise ForbiddenError("You are not the assigner of this task")
         if task.status not in (TaskStatus.IN_PROGRESS, TaskStatus.OVERDUE, TaskStatus.DONE_A):
             raise ValidationError("Task is not ready to be marked done")
-        if task.subtasks.exclude(status=TaskStatus.DONE_D).exists():
+        # A CANCELLED subtask can never itself reach DONE_D, so it must count as
+        # resolved here too -- otherwise a single cancelled subtask would permanently
+        # block the parent from ever completing (upstream fix, notIn not just != DONE_D).
+        if task.subtasks.exclude(status__in=[TaskStatus.DONE_D, TaskStatus.CANCELLED]).exists():
             raise ConflictError(
-                "All subtasks must be DONE_D before the parent task can be completed",
+                "All subtasks must be DONE_D or CANCELLED before the parent task can be completed",
                 code="SUBTASKS_INCOMPLETE",
             )
 
+        is_subtask = task.parent_task_id is not None
         task.status = TaskStatus.DONE_D
-        task.is_archived = True
+        # Archiving only ever applies to a main task -- a subtask reaching DONE_D
+        # doesn't archive anything (only the assigner's explicit done-d on the main
+        # task does, and only once every subtask is itself resolved).
+        if not is_subtask:
+            task.is_archived = True
         task.save()
 
         dispatch_notification(
             tenant_id=tenant_id,
             recipient=task.assignee,
-            type_=NotificationType.TASK_DONE_D,
+            type_=NotificationType.SUBTASK_DONE_D if is_subtask else NotificationType.TASK_DONE_D,
             entity_type="task",
             entity_id=task.id,
-            message=f"{user.name} archived the task: {task.title}",
+            message=(
+                f"{user.name} marked the subtask done: {task.title}"
+                if is_subtask
+                else f"{user.name} archived the task: {task.title}"
+            ),
             actor_name=user.name,
             entity_title=task.title,
         )
@@ -218,6 +257,68 @@ class TaskService:
                 entity_title=task.title,
             )
         return task
+
+    @staticmethod
+    def create_subtask(
+        user, tenant_id, parent_task_id, title, assignee_id, due_date, priority, description,
+        main_label_id=None,
+    ):
+        parent = TaskRepository.get_by_id(parent_task_id, tenant_id)
+        if parent.assignee_id != user.id:
+            raise ForbiddenError("You are not the assignee of the parent task")
+        if parent.status != TaskStatus.IN_PROGRESS:
+            raise ValidationError("Parent task must be accepted before adding subtasks")
+        if str(assignee_id) == str(parent.assigner_id):
+            raise ValidationError(
+                "A subtask cannot be assigned back to the parent task's assigner",
+                code="ASSIGNMENT_LOOP",
+            )
+        if due_date >= parent.due_date:
+            raise ValidationError(
+                "Subtask due date must be earlier than the parent task's due date",
+                code="SUBTASK_DUE_DATE_INVALID",
+            )
+
+        assignee = _validate_same_tenant_assignee(assignee_id, tenant_id)
+        if main_label_id is not None:
+            _validate_owned_label(main_label_id, user, tenant_id)
+            effective_label_id = main_label_id
+        else:
+            # Silent inheritance from the parent -- not re-validated against the
+            # caller's own label ownership, since it wasn't the caller's choice.
+            effective_label_id = parent.main_label_id
+
+        subtask = TaskRepository.create(
+            tenant_id=tenant_id,
+            title=title,
+            assigner=user,  # the parent task's assignee acts as the subtask's assigner
+            assignee=assignee,
+            status=TaskStatus.OPEN,  # dueDate is required for subtasks, unlike a top-level task
+            priority=priority,
+            due_date=due_date,
+            description=description,
+            main_label_id=effective_label_id,
+            parent_task=parent,
+        )
+
+        # Fires to the *parent's* assigner, not the new sub-assignee -- keeps the
+        # original delegator aware that a subtask was spawned under a task they
+        # delegated (api-spec.md §11 notification-types table, SUBTASK_CREATED row).
+        dispatch_notification(
+            tenant_id=tenant_id,
+            recipient=parent.assigner,
+            type_=NotificationType.SUBTASK_CREATED,
+            entity_type="task",
+            entity_id=subtask.id,
+            message=f'{user.name} created a subtask under "{parent.title}": {subtask.title}',
+            actor_name=user.name,
+            entity_title=subtask.title,
+        )
+        return subtask
+
+    @staticmethod
+    def get_subtask_or_404(tenant_id, parent_task_id, subtask_id):
+        return TaskRepository.get_subtask_by_id(subtask_id, parent_task_id, tenant_id)
 
     @staticmethod
     def remind_task(user, tenant_id, task_id):

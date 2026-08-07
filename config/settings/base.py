@@ -172,3 +172,9 @@ EMAIL_BACKEND = env("EMAIL_BACKEND", default="django.core.mail.backends.console.
 # SES_FROM_EMAIL is present-but-empty in .env.example (SES not wired up yet) --
 # `or` guards against that in addition to the truly-unset case.
 DEFAULT_FROM_EMAIL = env("SES_FROM_EMAIL", default="") or "noreply@bolo.local"
+
+# Evidence file storage -- IAM-role-only via the default boto3 credential provider
+# chain (see apps/common/storage.py), no separate access-key secret to manage, same
+# pattern as SES above.
+AWS_S3_BUCKET_NAME = env("S3_BUCKET_NAME", default="")
+AWS_S3_REGION = env("AWS_S3_REGION", default="ap-south-1")

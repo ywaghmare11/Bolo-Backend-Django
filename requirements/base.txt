@@ -15,3 +15,8 @@ celery==5.6.3
 # credential provider chain in prod (no AWS_ACCESS_KEY_ID/SECRET_ACCESS_KEY env vars),
 # same pattern as SES -- see docs/api/api-spec.md §5 and CLAUDE.md's env var table.
 boto3==1.40.76
+# Server-side re-sanitization of broadcast messageHtml (TipTap-authored rich text) --
+# guidelines.md's Security section names bleach explicitly, unlike upstream's own
+# hand-rolled safelist sanitizer (utils/htmlSanitize.ts) -- this project's own stated
+# tool choice takes precedence over the Node implementation detail.
+bleach==6.4.0

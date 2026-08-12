@@ -17,6 +17,7 @@ Including another URLconf
 from django.contrib import admin
 from django.urls import include, path
 
+from apps.broadcasts.views import BroadcastImagePresignView
 from apps.evidence.views import EvidencePresignView
 from apps.tasks.views import VoicePresignView
 
@@ -31,6 +32,12 @@ urlpatterns = [
     path('api/v1/labels/', include('apps.labels.urls')),
     path('api/v1/tenant/', include('apps.tenants.urls')),
     path('api/v1/sticky-notes/', include('apps.sticky_notes.urls')),
+    path('api/v1/broadcast-notices/', include('apps.broadcasts.urls')),
     path('api/v1/upload/presign/', EvidencePresignView.as_view(), name='evidence-presign'),
     path('api/v1/upload/voice-presign/', VoicePresignView.as_view(), name='voice-presign'),
+    path(
+        'api/v1/upload/broadcast-image-presign/',
+        BroadcastImagePresignView.as_view(),
+        name='broadcast-image-presign',
+    ),
 ]

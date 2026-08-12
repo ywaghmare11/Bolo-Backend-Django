@@ -32,6 +32,9 @@ USER_TRACKED_FIELDS = ["last_login_at", "last_logout_at"]
 COMMENT_TRACKED_FIELDS = ["is_edited"]
 # "file_name"/"caption" deliberately excluded -- same structural-fields-only principle.
 EVIDENCE_TRACKED_FIELDS = ["file_type"]
+# "message_json"/"message_html" deliberately excluded -- same structural-fields-only
+# principle as Comment's "text" exclusion.
+BROADCAST_TRACKED_FIELDS = ["status", "requires_acknowledgement"]
 
 
 def _url_kwarg(name):
@@ -88,6 +91,12 @@ _EVIDENCE_ROW = {
     "entity_type": "DOCUMENT",
     "model": "evidence.Evidence",
     "tracked_fields": EVIDENCE_TRACKED_FIELDS,
+}
+
+_BROADCAST_ROW = {
+    "entity_type": "BROADCAST",
+    "model": "broadcasts.BroadcastNotice",
+    "tracked_fields": BROADCAST_TRACKED_FIELDS,
 }
 
 AUDIT_ROUTE_CONFIG = {
@@ -198,6 +207,37 @@ AUDIT_ROUTE_CONFIG = {
         "id_resolver": _url_kwarg("evidence_id"),
         "action": AuditAction.DOCUMENT_DELETED,
     },
+    ("POST", "broadcast-list-create"): {
+        **_BROADCAST_ROW,
+        "id_resolver_post": _response_data_field("id"),
+        "action": AuditAction.BROADCAST_CREATED,
+    },
+    ("PATCH", "broadcast-detail"): {
+        **_BROADCAST_ROW,
+        "id_resolver": _url_kwarg("broadcast_id"),
+        "action": AuditAction.BROADCAST_UPDATED,
+    },
+    ("DELETE", "broadcast-detail"): {
+        **_BROADCAST_ROW,
+        "id_resolver": _url_kwarg("broadcast_id"),
+        "action": AuditAction.BROADCAST_DELETED,
+    },
+    ("POST", "broadcast-publish"): {
+        **_BROADCAST_ROW,
+        "id_resolver": _url_kwarg("broadcast_id"),
+        "action": AuditAction.BROADCAST_PUBLISHED,
+    },
+    ("POST", "broadcast-ack"): {
+        **_BROADCAST_ROW,
+        "id_resolver": _url_kwarg("broadcast_id"),
+        "action": AuditAction.BROADCAST_ACKNOWLEDGED,
+    },
+    # broadcast-image-presign / broadcast-image (confirm): excluded -- neither mutates
+    # a field this route config tracks in a way distinct from BROADCAST_UPDATED, and
+    # api-spec.md doesn't call out a dedicated audit event for image attach (same
+    # "don't invent a mapping speculatively" call as evidence's DOCUMENT_ACCESSED).
+    # BROADCAST_VIEWED: unused -- would require auditing GET requests, which the
+    # middleware doesn't support (only POST/PATCH/DELETE), same as DOCUMENT_ACCESSED.
     ("POST", "auth-verify-otp"): {
         "entity_type": "USER",
         "model": "users.User",

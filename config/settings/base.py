@@ -7,6 +7,7 @@ from datetime import timedelta
 from pathlib import Path
 
 import environ
+from celery.schedules import crontab
 
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
 
@@ -155,6 +156,17 @@ CELERY_ACCEPT_CONTENT = ["json"]
 CELERY_TASK_SERIALIZER = "json"
 CELERY_RESULT_SERIALIZER = "json"
 CELERY_TASK_ALWAYS_EAGER = env.bool("CELERY_TASK_ALWAYS_EAGER", default=False)
+
+# Celery beat -- periodic jobs. Django's built-in settings-based scheduler (no
+# django_celery_beat app installed) is enough for the one job that exists so far.
+CELERY_BEAT_SCHEDULE = {
+    "sticky-note-retention-sweep": {
+        "task": "apps.sticky_notes.retention_sweep",
+        # Natural port of upstream's 24h setInterval (docs/architecture/domain-model.md
+        # StickyNote section) -- once daily is enough since the retention window is 3 days.
+        "schedule": crontab(hour=2, minute=0),
+    },
+}
 
 SIMPLE_JWT = {
     "ACCESS_TOKEN_LIFETIME": timedelta(minutes=15),

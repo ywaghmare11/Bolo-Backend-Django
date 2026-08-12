@@ -10,6 +10,7 @@ class StickyNote(TimestampedModel):
         "users.User", on_delete=models.PROTECT, related_name="sticky_notes",
     )
     text = models.TextField()
+    color_code = models.CharField(max_length=7, default="#FEF3C7")
     due_at = models.DateTimeField(null=True, blank=True)
     is_pinned = models.BooleanField(default=False)
     # set when this note is converted to a task -- one note, one task

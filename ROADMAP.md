@@ -89,14 +89,16 @@ Each phase ends with a **"talking points"** line — memorize these, they're the
 
 ---
 
-## Phase 7 — Cross-entity search (Postgres FTS + trigram)
+## Phase 7 — Cross-entity search — SUPERSEDED, see `docs/api/api-spec.md` §13
 
-- Add a `search_vector` (`SearchVectorField`) to `Task`, `StickyNote`, `Comment`, `BroadcastNotice`; populate via a `pre_save`/`post_save` signal or a Postgres trigger (`django.contrib.postgres.indexes.GinIndex`)
-- Enable `pg_trgm` extension (migration: `TrigramSimilarity` for typo-tolerant partial matches, e.g. "meting" → "meeting")
-- Single `GET /api/v1/search?q=...` endpoint: fan out across the four search-enabled models (tenant-scoped!), rank with `SearchRank`, merge + paginate results by type
-- GIN index on each `search_vector` column
-
-**Talking point:** why Postgres FTS instead of Elasticsearch at this data volume (no second service to run/sync/monitor, ACID-consistent with the source data — no reindex lag — and `pg_trgm` covers the fuzzy-match case Elasticsearch would otherwise be reached for). Know the migration path if scale demanded it later (CDC into ES, or Postgres logical replication).
+> **Built 2026-08-12, to a different design than the plan below.** This section described the plan *before* `docs/` was re-synced from upstream on 2026-08-03; that sync brought in `api-spec.md` §13 and `docs/api/global-search-ai-contract.md`, verified directly against the real `bolo-backend` source — a materially different, already-shipped design (two endpoints, not one; Task+Sticky only, not four entity types; an OpenAI `gpt-4o-mini` query-understanding layer + plain `ILIKE`, not Postgres FTS/`pg_trgm`). Flagged as a real conflict rather than silently picked; the user chose "build to api-spec.md's contract, with real OpenAI" over this plan. Same kind of deliberate-deviation note as `docs/ops/security.md`'s auth section. Implemented in `apps/search/` — see `changelog.md`'s 2026-08-12 entry for the full breakdown. The bullets below are kept for reference/talking-point value only; they were **not** built.
+>
+> - ~~Add a `search_vector` (`SearchVectorField`) to `Task`, `StickyNote`, `Comment`, `BroadcastNotice`; populate via a `pre_save`/`post_save` signal or a Postgres trigger (`django.contrib.postgres.indexes.GinIndex`)~~
+> - ~~Enable `pg_trgm` extension (migration: `TrigramSimilarity` for typo-tolerant partial matches, e.g. "meting" → "meeting")~~
+> - ~~Single `GET /api/v1/search?q=...` endpoint: fan out across the four search-enabled models (tenant-scoped!), rank with `SearchRank`, merge + paginate results by type~~
+> - ~~GIN index on each `search_vector` column~~
+>
+> **Talking point, still valid even though this exact plan wasn't built:** why Postgres FTS instead of Elasticsearch at this data volume (no second service to run/sync/monitor, ACID-consistent with the source data — no reindex lag — and `pg_trgm` covers the fuzzy-match case Elasticsearch would otherwise be reached for). The design that *was* built raises the adjacent talking point instead: why an LLM query-understanding layer in front of plain `ILIKE` rather than Postgres FTS/trigram ranking — cheaper to reach acceptable fuzzy-match quality without a `search_vector`/GIN-index migration, at the cost of a real external dependency (cost, latency, data leaving India for the OpenAI call) and non-deterministic behavior that the deterministic Levenshtein-fallback layer exists specifically to bound.
 
 ---
 

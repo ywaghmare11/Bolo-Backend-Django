@@ -5,8 +5,9 @@ from django.utils import timezone
 from rest_framework.test import APIClient
 
 from apps.auth.tokens import issue_access_token
+from apps.notifications.models import Notification
 from apps.sticky_notes.models import StickyNote
-from apps.sticky_notes.tasks import sticky_note_retention_sweep
+from apps.sticky_notes.tasks import sticky_note_reminder_sweep, sticky_note_retention_sweep
 from apps.tenants.factories import TenantFactory
 from apps.users.factories import UserFactory
 
@@ -215,3 +216,42 @@ class TestStickyNoteRetentionSweep:
         assert old.id not in remaining_ids
         assert recent.id in remaining_ids
         assert no_due.id in remaining_ids
+
+
+@pytest.mark.django_db
+class TestStickyNoteReminderSweep:
+    def test_fires_once_for_note_past_due(self, owner):
+        note = StickyNote.objects.create(
+            user=owner, text="Call vendor", due_at=timezone.now() - timedelta(minutes=5),
+        )
+        sticky_note_reminder_sweep()
+
+        note.refresh_from_db()
+        assert note.reminder_fired is True
+        assert Notification.objects.filter(type="REMINDER_FIRED", recipient=owner).count() == 1
+
+    def test_does_not_refire_on_second_run(self, owner):
+        StickyNote.objects.create(
+            user=owner, text="Call vendor", due_at=timezone.now() - timedelta(minutes=5),
+        )
+        sticky_note_reminder_sweep()
+        sticky_note_reminder_sweep()
+
+        assert Notification.objects.filter(type="REMINDER_FIRED").count() == 1
+
+    def test_note_not_yet_due_is_untouched(self, owner):
+        note = StickyNote.objects.create(
+            user=owner, text="Future note", due_at=timezone.now() + timedelta(days=1),
+        )
+        sticky_note_reminder_sweep()
+
+        note.refresh_from_db()
+        assert note.reminder_fired is False
+        assert not Notification.objects.filter(type="REMINDER_FIRED").exists()
+
+    def test_note_without_due_at_is_untouched(self, owner):
+        note = StickyNote.objects.create(user=owner, text="No due date")
+        sticky_note_reminder_sweep()
+
+        note.refresh_from_db()
+        assert note.reminder_fired is False

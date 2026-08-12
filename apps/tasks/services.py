@@ -106,9 +106,27 @@ class TaskService:
             update_fields["evidence_required"] = fields["evidence_required"]
 
         if "due_date" in fields:
-            update_fields["due_date"] = fields["due_date"]
-            if fields["due_date"] is None and task.status == TaskStatus.OPEN:
+            new_due_date = fields["due_date"]
+            update_fields["due_date"] = new_due_date
+            # A new due date is a genuinely new threshold to cross -- the daily sweep's
+            # one-shot guards (apps/tasks/tasks.py) no longer apply to the old one.
+            update_fields["due_today_notified_at"] = None
+            update_fields["due_tomorrow_notified_at"] = None
+
+            if new_due_date is None and task.status == TaskStatus.OPEN:
                 update_fields["status"] = TaskStatus.DRAFT
+            elif (
+                new_due_date is not None
+                and task.status == TaskStatus.OVERDUE
+                and new_due_date.date() >= timezone.localdate()
+            ):
+                # CLAUDE.md Business Rules: "An OVERDUE task auto-transitions back to
+                # OPEN/IN_PROGRESS if its due date is edited to today-or-later."
+                update_fields["status"] = (
+                    TaskStatus.IN_PROGRESS
+                    if task.acceptance_status == AcceptanceStatus.ACCEPTED
+                    else TaskStatus.OPEN
+                )
 
         task = TaskRepository.update(task, **update_fields)
 

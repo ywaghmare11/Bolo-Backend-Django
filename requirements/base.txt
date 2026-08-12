@@ -20,3 +20,11 @@ boto3==1.40.76
 # hand-rolled safelist sanitizer (utils/htmlSanitize.ts) -- this project's own stated
 # tool choice takes precedence over the Node implementation detail.
 bleach==6.4.0
+# Global Search's query-understanding layer (docs/api/global-search-ai-contract.md) --
+# typo correction, roster-grounded person-name resolution, status/priority/due filter
+# extraction. Pinned to the stable 1.x client API (OpenAI(...).chat.completions.create),
+# not the newer 2.x/3.x major lines, since that's the interface this module is written
+# against. No OPENAI_API_KEY is configured in this dev sandbox, so search runs the
+# documented AI-unavailable fallback path here -- same "no real credentials, mock/skip
+# the external call" situation as boto3/S3 in apps/evidence and apps/broadcasts.
+openai==1.109.1

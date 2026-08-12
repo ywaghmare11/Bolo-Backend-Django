@@ -159,13 +159,27 @@ CELERY_RESULT_SERIALIZER = "json"
 CELERY_TASK_ALWAYS_EAGER = env.bool("CELERY_TASK_ALWAYS_EAGER", default=False)
 
 # Celery beat -- periodic jobs. Django's built-in settings-based scheduler (no
-# django_celery_beat app installed) is enough for the one job that exists so far.
+# django_celery_beat app installed) is enough for the jobs that exist so far.
 CELERY_BEAT_SCHEDULE = {
     "sticky-note-retention-sweep": {
         "task": "apps.sticky_notes.retention_sweep",
         # Natural port of upstream's 24h setInterval (docs/architecture/domain-model.md
         # StickyNote section) -- once daily is enough since the retention window is 3 days.
         "schedule": crontab(hour=2, minute=0),
+    },
+    "sticky-note-reminder-sweep": {
+        "task": "apps.sticky_notes.reminder_sweep",
+        # REMINDER_FIRED needs to fire close to the note's own dueAt (any time of day),
+        # not once a day like the retention sweep above -- every 15 minutes is prompt
+        # enough without being wasteful (a judgment call; no SLA is documented upstream).
+        "schedule": crontab(minute="*/15"),
+    },
+    "task-due-proximity-sweep": {
+        "task": "apps.tasks.due_proximity_sweep",
+        # ROADMAP.md Phase 8: "daily cron scanning tasks for TASK_DUE_TODAY/
+        # TASK_DUE_TOMORROW/TASK_OVERDUE" -- once daily, early morning before most
+        # users start their day (a judgment call; no specific time is documented).
+        "schedule": crontab(hour=7, minute=0),
     },
 }
 

@@ -56,6 +56,13 @@ class Task(TimestampedModel):
     # upstream 2026-07-30, ported here as part of the Subtasks/DoneA work)
     evidence_required = models.BooleanField(default=False)
     accepted_at = models.DateTimeField(null=True, blank=True)
+    # One-shot guards for the daily due-proximity sweep (apps/tasks/tasks.py) -- a
+    # persisted fact, not a cache/TTL, so "already notified" survives worker restarts
+    # and is auditable. Reset to null whenever due_date changes (TaskService.update_task)
+    # since a new due date is a genuinely new threshold to cross. TASK_OVERDUE needs no
+    # equivalent field -- the status transition to OVERDUE is itself the one-shot guard.
+    due_today_notified_at = models.DateTimeField(null=True, blank=True)
+    due_tomorrow_notified_at = models.DateTimeField(null=True, blank=True)
     parent_task = models.ForeignKey(
         "self",
         on_delete=models.PROTECT,

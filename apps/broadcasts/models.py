@@ -18,13 +18,11 @@ class BroadcastNotice(TimestampedModel):
     status = models.CharField(
         max_length=20, choices=BroadcastStatus.choices, default=BroadcastStatus.DRAFT,
     )
-    # no BroadcastNoticeAudienceDept rows = "not department-restricted" (all departments) --
-    # same semantics the old nullable single audience_dept FK had for null (2026-07-17 redesign:
-    # single FK -> join table, so a notice can target multiple departments at once)
-    # null = all role levels
-    audience_role_level = models.CharField(
-        max_length=20, choices=OrgRoleLevel.choices, null=True, blank=True,
-    )
+    # No BroadcastNoticeAudienceDept/BroadcastNoticeAudienceRoleLevel rows = "not
+    # restricted" on that dimension (all departments / all role levels) -- same null
+    # semantics the old single nullable FK/CharField each had (2026-07-17 dept redesign,
+    # 2026-07-30 role-level redesign: single field -> join table, so a notice can target
+    # multiple departments and/or multiple role levels at once).
     requires_acknowledgement = models.BooleanField(default=False)
     # single image only -- draft stores S3 key, publish overwrites with a pre-signed URL
     image_url = models.CharField(max_length=512, null=True, blank=True)
@@ -60,6 +58,26 @@ class BroadcastNoticeAudienceDept(models.Model):
 
     def __str__(self):
         return f"{self.broadcast_id}->{self.department_id}"
+
+
+class BroadcastNoticeAudienceRoleLevel(models.Model):
+    """Replaces the old single nullable `audience_role_level` field (2026-07-30 upstream
+    migration) -- a DRAFT/PUBLISHED notice can target multiple role levels at once (e.g.
+    HoD + Faculty only), same reasoning/shape as BroadcastNoticeAudienceDept above. No
+    rows for a notice means "not role-restricted" (all role levels). No FK on role_level
+    -- OrgRoleLevel is a fixed enum, not a table."""
+
+    pk = models.CompositePrimaryKey("broadcast", "role_level")
+    broadcast = models.ForeignKey(
+        "broadcasts.BroadcastNotice", on_delete=models.CASCADE, related_name="audience_role_levels",
+    )
+    role_level = models.CharField(max_length=20, choices=OrgRoleLevel.choices)
+
+    class Meta:
+        db_table = "broadcast_notice_audience_role_levels"
+
+    def __str__(self):
+        return f"{self.broadcast_id}->{self.role_level}"
 
 
 class BroadcastAcknowledgement(models.Model):

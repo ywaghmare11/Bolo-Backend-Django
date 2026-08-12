@@ -1,7 +1,7 @@
 import factory
 
 from apps.common.enums import OrgRoleLevel, Vertical
-from apps.tenants.models import Tenant, TenantMembership
+from apps.tenants.models import Department, Tenant, TenantMembership
 
 
 class TenantFactory(factory.django.DjangoModelFactory):
@@ -10,6 +10,14 @@ class TenantFactory(factory.django.DjangoModelFactory):
 
     name = factory.Sequence(lambda n: f"Tenant {n}")
     vertical = Vertical.EDUCATION
+
+
+class DepartmentFactory(factory.django.DjangoModelFactory):
+    class Meta:
+        model = Department
+
+    tenant = factory.SubFactory(TenantFactory)
+    name = factory.Sequence(lambda n: f"Department {n}")
 
 
 class TenantMembershipFactory(factory.django.DjangoModelFactory):

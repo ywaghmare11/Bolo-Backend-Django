@@ -40,6 +40,7 @@ INSTALLED_APPS = [
     "apps.broadcasts",
     "apps.notifications",
     "apps.audit",
+    "apps.search",
 ]
 
 MIDDLEWARE = [
@@ -190,3 +191,10 @@ DEFAULT_FROM_EMAIL = env("SES_FROM_EMAIL", default="") or "noreply@bolo.local"
 # pattern as SES above.
 AWS_S3_BUCKET_NAME = env("S3_BUCKET_NAME", default="")
 AWS_S3_REGION = env("AWS_S3_REGION", default="ap-south-1")
+
+# Global Search's query-understanding layer (docs/api/global-search-ai-contract.md).
+# Deliberately optional, not crash-on-missing like most required settings -- an empty
+# key is the documented "AI unavailable" condition (apps/search/ai_classify.py falls
+# back to a raw keyword classification, never a hard failure), not a misconfiguration.
+OPENAI_API_KEY = env("OPENAI_API_KEY", default="")
+OPENAI_SEARCH_MODEL = env("OPENAI_SEARCH_MODEL", default="gpt-4o-mini")

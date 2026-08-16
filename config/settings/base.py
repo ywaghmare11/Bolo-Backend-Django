@@ -181,6 +181,16 @@ CELERY_BEAT_SCHEDULE = {
         # users start their day (a judgment call; no specific time is documented).
         "schedule": crontab(hour=7, minute=0),
     },
+    "ai-nudge-followup-sweep": {
+        "task": "apps.notifications.ai_nudge_followup_sweep",
+        # domain-model.md row 8c: "Fires every 6h, no office-hours gate."
+        "schedule": crontab(minute=0, hour="*/6"),
+    },
+    "ai-nudge-due-proximity-sweep": {
+        "task": "apps.notifications.ai_nudge_due_proximity_sweep",
+        # domain-model.md row 8d: "Fires every 3h, no office-hours gate."
+        "schedule": crontab(minute=0, hour="*/3"),
+    },
 }
 
 SIMPLE_JWT = {

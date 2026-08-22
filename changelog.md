@@ -5,6 +5,27 @@
 
 ---
 
+## 2026-08-22 (2)
+
+- `[BE]` **General Notification panel** (`apps/notifications`) — `GET /notifications`, `PATCH /notifications/:id/read`, `POST /notifications/mark-all-read`, `GET /notifications/unread-count` per `docs/api/api-spec.md` §11. Not a new gap from today's docs sync — these endpoints have been documented since the Phase 1 model port and simply never had views/urls built on top; only the AI-Nudge-specific `/nudges` feed existed until now.
+  - `NotificationService` (new, alongside the existing `NudgeService` in the same `services.py`) — `list_notifications` (optional `isRead`/`type` filters, `type` accepts a comma-separated list of `NotificationType` values), `mark_read` (recipient-scoped ownership check via `NotificationRepository.get_own`, 404 for someone else's notification), `mark_all_read`, `unread_count`.
+  - Mounted at `/api/v1/notifications/` (new `apps/notifications/notification_urls.py`), alongside the existing `/api/v1/nudges/` mount for the same app — two URL prefixes into one app, same pattern Comments/Evidence already use in reverse (two apps sharing one `/tasks/` prefix).
+  - `dispatch_notification()` (the write side, wired into every task/broadcast/comment service since Phase 2/3) needed zero changes — `Notification` already had every field the general panel needs (`actor_name`/`entity_title`/`entity_context` were added for exactly this purpose but never had a reader until now).
+  - 11 new tests (242 total, all green): recipient scoping (list, unread-count, mark-all-read all correctly exclude another user's notifications), `isRead`/`type` filters, response shape, mark-read idempotency, 404 on marking someone else's notification read. `ruff check` clean.
+
+---
+
+## 2026-08-22
+
+- `[STD]` **Docs re-sync** from the original repo after the user pulled a large upstream batch (`Bolo` main 839e544→06c6b37, `bolo-backend` `develop` 518ab79→bbc6b30, `bolo-web` `develop` 94ccaa7→6be6398). Docs-only — no Django code changed this session. See `CLAUDE.md`'s header note for the full breakdown; summary here:
+  - Re-copied `api/api-spec.md`, `architecture/domain-model.md`, `architecture/system-design.md`, `product/prd.md`, `product/changelog.md`, `product/open-questions-web-v1.md`, `engineering/testing-strategy.md`, `ops/security.md` from upstream, then reapplied this project's own local annotations that upstream's own docs still don't carry (`JargonWord`, `Task.evidenceRequired`, member reactivation, Evidence delete-uploader-only, the access+refresh-token auth deviation).
+  - Fixed real staleness in this project's own `api-spec.md` found independent of the new upstream pull: Broadcast Notices and Voice Recording sections had never been updated after those features were actually built (2026-08-07, 2026-08-03) — corrected against current code.
+  - **New feature found, not built:** `PlatformAdmin` (superadmin) — cross-tenant tenant/member management with its own Email+OTP auth. Models have existed untouched since the Phase 1 scaffold; full API contract added to `api-spec.md` §22 and `security.md`.
+  - **Other gaps surfaced (flagged inline in the docs):** task list `view=open|overdue|done_a|by_label|due_this_week` + counts; Broadcast's "Entire Institution" empty-audience allowance (W110) + `sent`-view `audienceSize`/`from`/`to`/`updatedAt`; voice-recording playback still pre-signed instead of streamed; profile picture entirely unbuilt; general Notification panel (`GET /notifications`, mark-read, unread-count) documented since Phase 1 but never built — only the AI-Nudge-specific `/nudges` feed exists.
+  - `ops/deployment.md`/`ops/staging-runbook.md` left unsynced — AWS/OpenShift infra narrative, reference-only, no Django implication.
+
+---
+
 ## 2026-08-16
 
 - `[BE]` `[INFRA]` **AI Nudges** (`apps/notifications`) — `GET /nudges`, `POST /nudges/:id/skip`, `POST /nudges/skip-all` (`docs/api/api-spec.md` §11) plus the two recurring Celery beat sweeps that feed it. ROADMAP.md Phase 8's last remaining piece, explicitly flagged as out of scope in the two immediately preceding sessions (`changelog.md` 2026-08-12 (2)).

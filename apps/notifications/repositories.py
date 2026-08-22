@@ -43,6 +43,32 @@ class NotificationRepository:
         notification.read_at = timezone.now()
         notification.save(update_fields=["is_read", "read_at"])
 
+    @staticmethod
+    def list_for_recipient(recipient, tenant_id, is_read=None, types=None):
+        qs = Notification.objects.filter(recipient=recipient, tenant_id=tenant_id)
+        if is_read is not None:
+            qs = qs.filter(is_read=is_read)
+        if types:
+            qs = qs.filter(type__in=types)
+        return qs.order_by("-created_at")
+
+    @staticmethod
+    def get_own(notification_id, recipient, tenant_id) -> Notification:
+        try:
+            return Notification.objects.get(id=notification_id, recipient=recipient, tenant_id=tenant_id)
+        except Notification.DoesNotExist:
+            raise NotFoundError("Notification", notification_id) from None
+
+    @staticmethod
+    def unread_count(recipient, tenant_id) -> int:
+        return Notification.objects.filter(recipient=recipient, tenant_id=tenant_id, is_read=False).count()
+
+    @staticmethod
+    def mark_all_read(recipient, tenant_id) -> int:
+        return Notification.objects.filter(
+            recipient=recipient, tenant_id=tenant_id, is_read=False,
+        ).update(is_read=True, read_at=timezone.now())
+
 
 class NudgeSkipCounterRepository:
     @staticmethod

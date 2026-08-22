@@ -58,6 +58,35 @@ def dispatch_notification(
         )
 
 
+class NotificationService:
+    """GET /notifications, PATCH /notifications/:id/read,
+    POST /notifications/mark-all-read, GET /notifications/unread-count
+    (docs/api/api-spec.md §11, general panel) -- distinct from NudgeService
+    below, which is the AI-Nudge-specific /nudges feed."""
+
+    @staticmethod
+    def list_notifications(user, tenant_id, is_read=None, types=None):
+        return NotificationRepository.list_for_recipient(user, tenant_id, is_read=is_read, types=types)
+
+    @staticmethod
+    def mark_read(user, tenant_id, notification_id) -> dict:
+        notification = NotificationRepository.get_own(notification_id, user, tenant_id)
+        NotificationRepository.mark_read(notification)
+        return {
+            "id": str(notification.id),
+            "isRead": notification.is_read,
+            "readAt": notification.read_at.isoformat() if notification.read_at else None,
+        }
+
+    @staticmethod
+    def mark_all_read(user, tenant_id) -> dict:
+        return {"updatedCount": NotificationRepository.mark_all_read(user, tenant_id)}
+
+    @staticmethod
+    def unread_count(user, tenant_id) -> dict:
+        return {"count": NotificationRepository.unread_count(user, tenant_id)}
+
+
 class NudgeService:
     """GET /nudges, POST /nudges/:id/skip, POST /nudges/skip-all
     (docs/api/api-spec.md §11). Every row is re-validated against current

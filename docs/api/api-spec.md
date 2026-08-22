@@ -148,6 +148,7 @@ Response 200:
     "name": "Dr. Kamal Sethi",
     "tenantId": "uuid",
     "tenantName": "ABC College",
+    "tenantSlug": "abc-college",
     "roleLevel": "TOP",
     "roleLabel": "Dean",
     "canBroadcast": true,
@@ -158,6 +159,8 @@ Response 200:
 
 Set-Cookie: token=<jwt>; HttpOnly; SameSite=Strict; Path=/; (no Max-Age — session cookie)
 ```
+
+**`tenantSlug`** (bolo-backend-django sync 2026-08-22, upstream added 2026-08-09; `Tenant.urlSlug` not yet a field in this project — see CLAUDE.md) — the tenant's `urlSlug`. Upstream's `bolo-web` uses it + a slugified first name to build a post-login URL path. Purely cosmetic/frontend routing — never an authorization signal; irrelevant to this backend beyond returning the field once `urlSlug` exists.
 
 **Errors:** 400 `INVALID_OTP` (includes `data.attemptsRemaining`) · 400 `OTP_EXPIRED` · 429 `RATE_LIMITED` (locked 15 min, `data.attemptsRemaining: 0`)
 
@@ -190,8 +193,8 @@ GET /api/v1/tasks?view=assigned&status=all&page=1&limit=20
 
 | Param | Required | Values | Default |
 |---|---|---|---|
-| `view` | yes | `assigned` \| `delegated` \| `needs_attention` | — |
-| `labelId` | no | UUID | — |
+| `view` | yes | `assigned` \| `delegated` \| `needs_attention` \| `open` \| `overdue` \| `done_a` \| `by_label` \| `due_this_week` | — |
+| `labelId` | no (required when `view=by_label`) | UUID | — |
 | `isArchived` | no | `true` \| `false` | `false` |
 | `page` | no | integer ≥ 1 | `1` |
 | `limit` | no | 1–100 | `20` |
@@ -200,6 +203,11 @@ GET /api/v1/tasks?view=assigned&status=all&page=1&limit=20
 - `assigned` — `assigneeId = me`; excludes `DRAFT`, `DONE_D`, `CANCELLED`, `isArchived=true`; sort: `OVERDUE` first → `dueDate ASC` → `createdAt DESC`
 - `delegated` — `assignerId = me`; excludes `DONE_D`, `isArchived=true`; same sort
 - `needs_attention` — tasks where action is required: `OPEN` (not yet accepted) + `OVERDUE` + `DONE_A` (awaiting assigner mark); scoped to me as assignee or assigner
+- `open` *(bolo-backend-django sync 2026-08-22, not yet built — see CLAUDE.md)* — `status = OPEN`; scoped to me as assignee or assigner
+- `overdue` *(not yet built)* — `status = OVERDUE`; scoped to me as assignee or assigner
+- `done_a` *(not yet built)* — `status = DONE_A`; scoped to me as assignee or assigner
+- `by_label` *(not yet built)* — requires `labelId`; main-label tasks (as assigner, or as assignee without a personal label override) + personal-label tasks (as assignee), scoped to me
+- `due_this_week` *(not yet built)* — `dueDate` falls within the current Monday–Sunday calendar week (server-local day boundaries); excludes `DRAFT`, `DONE_D`, `CANCELLED`; scoped to me as assignee or assigner
 
 **Access:** `requireAuth` — scoped to `tenantId` from JWT.
 
@@ -253,13 +261,13 @@ Response 200:
 GET /api/v1/tasks/counts
 ```
 
-Returns the count of tasks in each of the three task-tab views (`assigned`, `delegated`, `needs_attention`) for the calling user — used for sidebar/tab badge counts. Cheap COUNT query — no pagination, no body params. Uses the same filter logic as `GET /tasks?view=...` (see above), scoped to `tenantId` from JWT.
+Returns the count of tasks in each task-tab view (`assigned`, `delegated`, `needs_attention`, `open`, `overdue`, `done_a`/`doneA`, `due_this_week`/`dueThisWeek`) for the calling user — used for sidebar/tab badge counts. Cheap COUNT query — no pagination, no body params. Uses the same filter logic as `GET /tasks?view=...` (see above), scoped to `tenantId` from JWT. `by_label` has no count here since it requires a `labelId`. **The `open`/`overdue`/`doneA`/`dueThisWeek` counts are bolo-backend-django sync 2026-08-22 additions, not yet built here** — see CLAUDE.md.
 
 **Access:** `requireAuth` — scoped to `tenantId` + `userId` from JWT.
 
 ```json
 Response 200:
-{ "success": true, "data": { "assigned": 4, "delegated": 7, "needsAttention": 2 }, "message": "OK" }
+{ "success": true, "data": { "assigned": 4, "delegated": 7, "needsAttention": 2, "open": 3, "overdue": 1, "doneA": 2, "dueThisWeek": 5 }, "message": "OK" }
 ```
 
 **Errors:** 401 · 500
@@ -340,7 +348,7 @@ Response 200:
 }
 ```
 
-> `voiceRecording` is `null` if the task was created via keyboard. `hasAudio: true` means an audio clip is stored in S3 — use `GET /tasks/:id/voice-recording/audio` to get a playback URL. The raw S3 key is never exposed.
+> `voiceRecording` is `null` if the task was created via keyboard. `hasAudio: true` means an audio clip is stored in S3 — point an `<audio>` tag's `src` directly at `GET /tasks/:id/voice-recording/audio` to stream it. The raw S3 key is never exposed.
 
 **Errors:** 401 · 403 (not assigner or assignee) · 404 · 500
 
@@ -878,18 +886,12 @@ Response 200:
 
 ---
 
-### GET /tasks/:id/voice-recording/audio — get pre-signed playback URL
+### GET /tasks/:id/voice-recording/audio — stream audio playback
 
-Generates a short-lived pre-signed S3 GET URL for audio playback. Only callable if `hasAudio: true`.
+**Changed (bolo-backend-django sync 2026-08-22, upstream changed 2026-07-25) — this endpoint used to return `{ playbackUrl, expiresIn }`, a pre-signed S3 GET URL. This project's code still returns that shape (`VoiceRecordingService.get_playback_url`) — needs updating to match.** Only callable if `hasAudio: true`. Streams the S3 object server-side with `Content-Type` from the stored object metadata — a pre-signed URL's signature is its entire authorization, so returning one in JSON made it a copyable credential valid for anyone for its full TTL, session or not; this endpoint re-checks assigner/assignee on every request instead. Point an `<audio>` tag's `src` directly at this URL — cookies attach automatically for same-origin requests. Same pattern as Evidence (§5) and Broadcast image (§10).
 
-```json
-Response 200:
-{
-  "data": {
-    "playbackUrl": "https://s3.ap-south-1.amazonaws.com/bolo-voice/...",
-    "expiresIn": 900
-  }
-}
+```
+Response 200: audio/webm bytes (or the object's stored Content-Type)
 ```
 
 **Errors:** 401 · 403 · 404 (no audio stored) · 500
@@ -1078,16 +1080,17 @@ Response 201:
 
 ## 10. Broadcast Notices
 
-**Implementation status (2026-07-12):** CRUD + publish + list + ack + ack-count are built (`bolo-backend/src/routes/broadcast-notices.routes.ts`). The two image endpoints below (`POST /upload/broadcast-image-presign`, `POST /broadcast-notices/:id/image`) are **not yet implemented** — this backend has no S3/presign client wired anywhere yet (same gap blocks task-evidence upload; see the commented-out `uploadRoutes` import in `routes/index.ts`). Contract stays documented here for when that infra lands. Server-side HTML re-sanitization uses a small in-repo safelist sanitizer (`utils/htmlSanitize.ts`), not a library — fine for TipTap's current tag set, revisit if the editor's allowed marks grow.
+**Implementation status (bolo-backend-django, built 2026-08-07):** CRUD + publish + list + ack + ack-count + both image endpoints below are all built (`apps/broadcasts/`). Server-side HTML re-sanitization uses `bleach`. **Not yet built (bolo-backend-django sync 2026-08-22 — see CLAUDE.md):** the W110 "Entire Institution" stop-gap (this project still hard-rejects publish with `DRAFT_MISSING_FIELDS` when both audience fields are empty), the `sent`-view `audienceSize`/`from`/`to`/`updatedAt` additions below, and the "notify newly-added recipients on audience-widening edit" rule (that one **is** already built here, ahead of when it was added to this doc).
 
 ### Permissions recap:
 - `canBroadcast` on `TenantMembership` gates creation — 403 if false.
-- At least one of `audienceDeptIds` (array, can target multiple departments — e.g. Computer Science + Civil Engineering only) or `audienceRoleLevel` must be set at publish — 400 `DRAFT_MISSING_FIELDS` if both are empty/null. An empty `audienceDeptIds` array means "not department-restricted" (all departments). (2026-07-17: `audienceDeptId` singular FK → `audienceDeptIds` array, via `BroadcastNoticeAudienceDept` join table — multi-department targeting.)
+- `audienceDeptIds[]` + `audienceRoleLevels[]` — both may be empty at publish **once W110 below is applied here (not yet — see CLAUDE.md)**; today this project still requires at least one to be non-empty, 400 `DRAFT_MISSING_FIELDS` otherwise. Empty `audienceDeptIds[]` means "not department-restricted" (all departments); empty `audienceRoleLevels[]` means "not role-restricted" (all role levels). `audienceRoleLevels` is a `BroadcastNoticeAudienceRoleLevel` join table (built here, matching upstream's 2026-07-30 change) — same shape as `audienceDeptIds`'s `BroadcastNoticeAudienceDept` join table (2026-07-17) — a notice can target several departments and several role levels at once (e.g. Computer Science + Civil Engineering, HoD + Faculty only).
+- **W110 — "Entire Institution" (bolo-backend-django sync 2026-08-22, upstream stop-gap 2026-07-25, pending client/product-owner confirmation, `open-questions-web-v1.md` §23) — not yet applied in this project's code:** upstream now allows publishing with **both** `audienceDeptIds`/`audienceRoleLevels` empty, treated as "Entire Institution" (reaches every tenant member, including anyone with no department assigned) — because previously there was no way to reach 100% of a tenant (one Role Level misses other roles; every Department excludes members with no department). This project's `_validate_dept_ids`/publish check (`apps/broadcasts/services.py`) still enforces the old mandatory-scope rule. Revert-worthy if the client says mandatory-scope should stand — track against W110's resolution upstream before building.
 - Broadcasts live for **exactly 1 day** — `expiresAt = publishedAt + 24 hours` (set by server, not client).
 - Stored as `messageJson` (TipTap AST — editor source) + `messageHtml` (sanitized HTML — feed rendering).
 - One image attachment maximum.
 
-### Image upload (broadcast) — built 2026-07-17, single-object-per-entity (mirrors profile-picture, not task evidence)
+### Image upload (broadcast) — built 2026-08-07, single-object-per-entity (mirrors profile-picture, not task evidence)
 
 No separate attachment id and no filename in the S3 key — since exactly one image is allowed per
 broadcast (never multiple), the key is derived purely from `(tenantId, broadcastId)`, same shape
@@ -1099,15 +1102,11 @@ S3 paths:
   Confirmed → bolo-broadcast/{tenantId}/{broadcastId}
 ```
 
-**Image serving:** the receiver view shows an "Attachments" section below the message body with
-the image as a thumbnail — **click-to-open** (a lightbox), not always-inline like the message
-body itself (explicit product decision, 2026-07-17 — supersedes the earlier "renders inline"
-note). At publish time the server generates a pre-signed GET URL with **25h TTL** and overwrites
-`imageUrl` with it. The feed returns this URL directly — no per-request URL generation.
+**Image serving (bolo-backend-django, built 2026-08-07 — backend-streamed from day one, matching upstream's own later 2026-07-25 correction):** `imageUrl` in the feed is an **app-relative path** to `GET /broadcast-notices/:id/image` (below), not a pre-signed or raw S3 URL — the endpoint re-checks sender-or-audience-membership on every request rather than baking access into a copyable, time-limited signed URL. This project never built the earlier "25h pre-signed URL persisted on `imageUrl`" design upstream shipped and later walked back.
 
 ### POST /upload/broadcast-image-presign — request pre-signed image upload URL
 
-**Access:** `requireAuth` + `canBroadcast = true` + must be sender of the (still-DRAFT) broadcast.
+**Access:** `requireAuth` + `canBroadcast = true` + must be sender of the broadcast. The broadcast must be **editable** — `DRAFT`, or `PUBLISHED` and not yet expired — 400 `CANNOT_EDIT_EXPIRED` otherwise (built here to match upstream's 2026-07-26 widening).
 
 ```json
 Request:
@@ -1133,14 +1132,14 @@ Response 200:
 
 No request body — the confirmed key is derived from `(tenantId, broadcastId)` alone. Server does:
 HeadObject (verify the PUT landed) → CopyObject → DeleteObject → UPDATE `imageUrl` with the
-confirmed S3 key (not the pre-signed URL yet — that is generated at publish).
+confirmed S3 key (no pre-signed URL is ever generated — see streaming note above).
 
 ```json
 Response 200:
 { "data": { "hasImage": true }, "message": "Image attached" }
 ```
 
-**Errors:** 400 (`CANNOT_EDIT_PUBLISHED`, or `UPLOAD_NOT_CONFIRMED` if the S3 PUT never landed) · 401 · 403 (`FORBIDDEN` — not the sender) · 404 · 500
+**Errors:** 400 (`CANNOT_EDIT_EXPIRED`, or `UPLOAD_NOT_CONFIRMED` if the S3 PUT never landed) · 401 · 403 (`FORBIDDEN` — not the sender) · 404 · 500
 
 ---
 
@@ -1154,14 +1153,16 @@ GET /api/v1/broadcast-notices?view=sent&page=1&limit=20
 | Param | Required | Values | Default |
 |---|---|---|---|
 | `view` | no | `received` \| `sent` | `received` |
+| `from` | no | ISO date/datetime — `view=sent` only *(bolo-backend-django sync 2026-08-22, not yet built)* | — |
+| `to` | no | ISO date/datetime — `view=sent` only *(not yet built)* | — |
 | `page` | no | integer ≥ 1 | `1` |
 | `limit` | no | 1–100 | `20` |
 
 **View → filter logic** (added 2026-07-14, W97 — see `open-questions-web-v1.md` §21):
 - `received` (default) — active (`PUBLISHED`, non-expired) broadcasts where the audience matches the calling user's own dept + roleLevel. **A sender does NOT automatically see their own broadcast here** unless they also happen to match their own audience scope (e.g. a Dean broadcasting to HoDs never sees it in `received`, since the Dean is `TOP` not `MID`).
-- `sent` — everything `senderId = me` created, **any** status (`DRAFT` + `PUBLISHED`, including expired) — the sender's own management view, so they can see/edit drafts and check on what they've published regardless of whether they're in its audience. Rows omit `hasAcknowledged` (not meaningful for your own sent item) but still include `ackCount`.
+- `sent` — everything `senderId = me` created, the sender's own management view — this project **excludes `DRAFT`** here (own correction, matches upstream's later 2026-07-26 "temporarily excludes DRAFT" change for the same reason: no resume/publish-a-draft action exists yet). Still includes expired `PUBLISHED` rows. Rows omit `hasAcknowledged` (not meaningful for your own sent item) but include `ackCount`. **Not yet built here:** `audienceSize` (a live count of members currently matching that row's audience scope, deliberately live not a publish-time snapshot) and optional `from`/`to` narrowing by `createdAt` — see CLAUDE.md.
 
-**Access:** `requireAuth`. Invalid `view` value, or `page`/`limit` out of range → 400 `VALIDATION_ERROR`.
+**Access:** `requireAuth`. Invalid `view` value, `from`/`to` not a valid date, or `page`/`limit` out of range → 400 `VALIDATION_ERROR`.
 
 **Pagination added 2026-07-14** — the endpoint previously ignored `page`/`limit` entirely and always returned every matching row unpaginated (the Postman collection had sent these params since before this feature existed, silently ignored). Now real, matching `GET /notifications`' `page`/`limit` convention exactly (`PaginatedResponse<T>` shape, max `limit` 100).
 
@@ -1176,21 +1177,24 @@ Response 200 (view=received):
       "messageHtml": "<p>All faculty...</p>",
       "audienceDeptIds": ["uuid"],
       "audienceDeptNames": ["CSE"],
-      "audienceRoleLevel": "EXECUTOR",
+      "audienceRoleLevels": ["EXECUTOR"],
       "requiresAcknowledgement": true,
       "ackCount": 12,
       "hasAcknowledged": false,         // true if calling user has acknowledged
-      "imageUrl": "https://...",
+      "imageUrl": "/broadcast-notices/uuid/image",
       "status": "PUBLISHED",
       "expiresAt": "2026-06-21T10:00:00Z",
-      "createdAt": "2026-06-20T10:00:00Z"
+      "createdAt": "2026-06-20T10:00:00Z",
+      "updatedAt": "2026-06-20T10:00:00Z"   // bolo-backend-django sync 2026-08-22, not yet in the serializer — see CLAUDE.md
     }
   ],
   "pagination": { "page": 1, "limit": 20, "total": 12 }
 }
 ```
 
-`view=sent` returns the same shape minus `hasAcknowledged`, and includes `DRAFT` rows (`expiresAt: null`) alongside `PUBLISHED` ones.
+`view=sent` returns the same shape minus `hasAcknowledged` — this project excludes `DRAFT` there (see above), so `expiresAt` is always set.
+
+**`updatedAt`** (upstream added 2026-07-26, not yet in this project's serializer) — lets a recipient tell whether a notice was edited after it originally went out. Not a simple `updatedAt !== createdAt` check client-side: `publish()` itself bumps `updatedAt` too (DRAFT → PUBLISHED is itself a write), so that alone false-positives on every freshly-published notice. The correct check is `updatedAt` meaningfully later than `expiresAt` minus 24h (the original publish instant, with clock-jitter buffer).
 
 ---
 
@@ -1203,8 +1207,8 @@ Request:
 {
   "messageJson": { /* TipTap JSON AST */ },   // required
   "messageHtml": "<p>All faculty...</p>",     // required — sanitized by client before sending; server re-sanitizes
-  "audienceDeptIds": ["uuid"],                // at least one of audienceDeptIds/audienceRoleLevel required at publish; optional while DRAFT
-  "audienceRoleLevel": "EXECUTOR",           // at least one of audienceDeptIds/audienceRoleLevel required at publish; optional while DRAFT
+  "audienceDeptIds": ["uuid"],                // at least one of audienceDeptIds/audienceRoleLevels required at publish today (see W110 above); optional while DRAFT
+  "audienceRoleLevels": ["EXECUTOR"],        // ditto
   "requiresAcknowledgement": true            // optional — default false
   // image is attached separately via POST /broadcast-notices/:id/image after S3 upload
 }
@@ -1221,17 +1225,16 @@ Response 201:
 }
 ```
 
-**Errors:** 400 (VALIDATION_ERROR — missing `messageJson`/`messageHtml`, or text over the char limit; `INVALID_DEPARTMENT` — one or more `audienceDeptIds` don't exist in the caller's tenant, corrected 2026-07-13, found via manual API testing: the server previously passed it straight to Prisma and a bad value threw an unhandled 500 instead of a clean 400; batch-checked via `checkDeptsBelongToTenant` since 2026-07-17's multi-department change) · 401 · 403 (BROADCAST_NOT_PERMITTED) · 500
+**Errors:** 400 (VALIDATION_ERROR — missing `messageJson`/`messageHtml`, text over the char limit, or an `audienceRoleLevels` entry outside `TOP`/`MID`/`EXECUTOR`; `INVALID_DEPARTMENT` — `audienceDeptIds` contains a department that doesn't exist in the caller's tenant, batch-checked via `_validate_dept_ids`) · 401 · 403 (BROADCAST_NOT_PERMITTED) · 500
 
 ---
 
 ### POST /broadcast-notices/:id/publish — publish a draft
 
 Transitions `DRAFT → PUBLISHED`. Server does in order:
-1. Validates at least one of `audienceDeptIds`/`audienceRoleLevel` is set
+1. Validates `audienceDeptIds`/`audienceRoleLevels` — today, at least one must be non-empty (400 `DRAFT_MISSING_FIELDS` otherwise); relax to allow "Entire Institution" once W110 above is applied here
 2. Sets `expiresAt = now + 24 hours`
-3. If image attached: generates **pre-signed GET URL with 25h TTL** from the stored S3 key → overwrites `imageUrl` with this URL (feed returns it directly — no per-request generation)
-4. Enqueues fan-out notification job (async — not inline)
+3. Enqueues fan-out notification job (async — not inline)
 
 **Access:** Sender only + `canBroadcast = true`.
 
@@ -1242,17 +1245,21 @@ Response 200:
     "id": "uuid",
     "status": "PUBLISHED",
     "expiresAt": "2026-06-21T10:00:00Z",
-    "imageUrl": "https://s3.ap-south-1.amazonaws.com/bolo-broadcast/tenantId/broadcastId/...?X-Amz-Expires=90000&..."
+    "imageUrl": "/broadcast-notices/uuid/image"
   },
   "message": "Broadcast published"
 }
 ```
 
-**Errors:** 400 (DRAFT_MISSING_FIELDS — audience not set) · 401 · 403 · 404 · 500
+**Errors:** 400 (DRAFT_MISSING_FIELDS — audience not set, see W110) · 401 · 403 · 404 · 500
 
 ---
 
-### PATCH /broadcast-notices/:id — edit (sender only, DRAFT status only)
+### PATCH /broadcast-notices/:id — edit (sender only)
+
+A `DRAFT` is always editable. A `PUBLISHED` notice is editable while still inside its 24h `expiresAt` window — 400 `CANNOT_EDIT_EXPIRED` once expired. Editing never changes `expiresAt` itself.
+
+**Notifies newly-added audience members (built here, matching upstream's 2026-07-30 change):** editing an already-`PUBLISHED` notice's `audienceDeptIds`/`audienceRoleLevels` fires `BROADCAST_POSTED` to whoever is newly in scope as a result of the edit (set difference of old vs. new audience resolution). Members already matching before the edit are not re-notified; members removed by the edit get no notification.
 
 ```json
 Request (any subset):
@@ -1260,16 +1267,16 @@ Request (any subset):
   "messageJson": { /* updated TipTap AST */ },
   "messageHtml": "<p>Updated text</p>",
   "audienceDeptIds": ["uuid"],
-  "audienceRoleLevel": "MID",
+  "audienceRoleLevels": ["MID"],
   "requiresAcknowledgement": false,
   "imageUrl": null
 }
 
 Response 200:
-{ "data": { "id": "uuid", "status": "DRAFT" }, "message": "Draft updated" }
+{ "data": { "id": "uuid", "status": "DRAFT" }, "message": "Broadcast updated" }
 ```
 
-**Errors:** 400 (CANNOT_EDIT_PUBLISHED · `INVALID_DEPARTMENT` if one or more `audienceDeptIds` don't exist in the caller's tenant, same check/fix as create above) · 401 · 403 · 404 · 500
+**Errors:** 400 (`CANNOT_EDIT_EXPIRED` · `INVALID_DEPARTMENT` if `audienceDeptIds` contains a department that doesn't exist in the caller's tenant · `VALIDATION_ERROR` if `audienceRoleLevels` contains an invalid role level) · 401 · 403 · 404 · 500
 
 ---
 
@@ -1287,7 +1294,7 @@ Response 200: { "data": null, "message": "Broadcast deleted" }
 
 Inserts a `BroadcastAcknowledgement` row. Composite PK `(broadcastId, userId)` prevents duplicates at DB level.
 
-**Access:** `requireAuth`. Broadcast must be `PUBLISHED` and not expired. `requiresAcknowledgement` must be true. **Caller must be in the broadcast's audience** (own `dept` in `audienceDeptIds` or own `roleLevel` matches `audienceRoleLevel`, same match rule as `GET /broadcast-notices` — corrected 2026-07-13, W96) — 403 otherwise. This includes the sender: they can only ack their own broadcast if they'd also see it in their own feed.
+**Access:** `requireAuth`. Broadcast must be `PUBLISHED` and not expired. `requiresAcknowledgement` must be true. **Caller must be in the broadcast's audience** (own `dept`+`roleLevel` match `audienceDeptIds`/`audienceRoleLevels`, same match rule as `GET /broadcast-notices`) — 403 otherwise. This includes the sender: they can only ack their own broadcast if they'd also see it in their own feed.
 
 ```json
 Response 200:
@@ -1295,6 +1302,14 @@ Response 200:
 ```
 
 **Errors:** 400 (not a requiring-ack broadcast · expired) · 401 · 403 (`NOT_IN_AUDIENCE`) · 404 · 409 (ALREADY_ACKNOWLEDGED) · 500
+
+---
+
+### GET /broadcast-notices/:id/image — fetch the broadcast image content
+
+**Access:** `requireAuth`. Sender may always fetch their own broadcast's image (any status). Anyone else must be in the audience: `status = PUBLISHED`, not expired, dept/roleLevel match — same rule as `POST /broadcast-notices/:id/ack`. Streams the S3 object server-side, `Content-Type` from the stored object metadata — no presigning.
+
+**Errors:** 401 · 403 (`NOT_IN_AUDIENCE`) · 404 (broadcast not found, or has no image) · 500
 
 ---
 
@@ -1740,7 +1755,7 @@ Response 200:
     "name": "Prof. Asha Nair",
     "email": "asha@abc.edu",
     "phone": "+919876543210",
-    "profilePicUrl": "https://s3.../presigned-get-url",
+    "profilePicUrl": "/users/uuid/profile-picture/file",
     "preferredLang": "EN",
     "tenantId": "uuid",
     "tenantName": "ABC College",
@@ -1796,7 +1811,7 @@ Response 200:
 **Access:** `requireAuth`. No request body — confirms whatever was just PUT to the caller's presigned URL.
 
 ```json
-Response 200: { "data": { "profilePicUrl": "https://s3.../presigned-get-url" } }
+Response 200: { "data": { "profilePicUrl": "/users/uuid/profile-picture/file" } }
 Response 400: { "error": "S3 upload not confirmed" }  // client never PUT the file, or it expired
 ```
 
@@ -1810,6 +1825,25 @@ Response 400: { "error": "S3 upload not confirmed" }  // client never PUT the fi
 Response 200: { "data": null }
 Response 404: { "error": "No profile picture set" }
 ```
+
+---
+
+### GET /users/:userId/profile-picture — get any tenant member's profile picture by ID *(bolo-backend-django sync 2026-08-22, not yet built — see CLAUDE.md)*
+
+**Access:** `requireAuth` — any tenant member (e.g. task cards, comments, org chart, where only a `userId` is known). `userId` must belong to the caller's tenant — 404 if not.
+
+```json
+Response 200: { "data": { "userId": "uuid", "profilePicUrl": "/users/uuid/profile-picture/file-or-null" } }
+Response 404: { "error": "User not found: uuid" }
+```
+
+---
+
+### GET /users/:userId/profile-picture/file — fetch the profile picture content *(bolo-backend-django sync 2026-08-22, not yet built — see CLAUDE.md)*
+
+**Access:** `requireAuth`, tenant-scoped only — no further per-viewer restriction, since profile pictures are already visible tenant-wide in member lists, task cards, comments, and the org chart. Streams the S3 object server-side, `Content-Type` from the stored object metadata — **never a pre-signed URL**, same pattern as Evidence/Broadcast image (§5, §10). `getPresignedGetUrl`-style URL generation should have no remaining callers anywhere once this ships.
+
+**Errors:** 401 · 404 (user not found, or no picture set) · 500
 
 ---
 
@@ -1849,16 +1883,20 @@ Response 200:
       "userId": "uuid",
       "name": "Prof. Asha Nair",
       "email": "asha@abc.edu",
+      "profilePicUrl": "/users/uuid/profile-picture/file-or-null",
       "roleLevel": "MID",
       "roleLabel": "HoD",
       "departmentId": "uuid",
       "departmentName": "CSE",
-      "canBroadcast": false
+      "canBroadcast": false,
+      "joinedAt": "2026-06-01T10:00:00+05:30"
     }
   ],
   "pagination": { "page": 1, "limit": 50, "total": 87 }
 }
 ```
+
+**`profilePicUrl`/`joinedAt`** (bolo-backend-django sync 2026-08-22, not yet built): `profilePicUrl` is the streaming path from `GET /users/:userId/profile-picture/file` above, or `null`. `joinedAt` is the member's `TenantMembership.createdAt`.
 
 ---
 
@@ -2350,11 +2388,152 @@ Dedup within the file is case-insensitive (last row wins; earlier duplicate rows
 
 ---
 
+## 22. Platform Admin (Superadmin) *(bolo-backend-django sync 2026-08-22, upstream built 2026-07-15, W35/W98 resolved — models scaffolded here since Phase 1, but no auth/views/services/repositories/urls built yet; see CLAUDE.md)*
+
+A `PlatformAdmin` is a cross-tenant actor, outside `Tenant`/RLS scoping entirely — not a `User`, not a `TenantMembership` role. It registers new tenants and can add/remove users in **any** tenant. No self-registration: rows are provisioned only via an ops-run seed script. See `docs/architecture/domain-model.md`'s "PlatformAdmin" section for the model shape.
+
+Auth mirrors `/auth/*` (Email+OTP, same OTP/email infra) but is fully parallel: separate `PlatformAdminOtpCode` table (not `OtpCode` — avoids colliding with a tenant user's in-flight OTP on the same email), separate `admin_token` cookie (not `token`), separate JWT payload (`{ adminId, email, isPlatformAdmin: true }` — no `tenantId`/`roleLevel`, so a tenant session and a platform-admin session can never be mistaken for or coexist-confused with each other).
+
+**Note:** upstream also has an in-flight, *unmerged* "Admin Console" feature (`/api/v1/admin-console/tenants/...`, `bug/voice-post-deploy-issues` branch as of this sync) that is a **different, third surface** — gated by the jargon-admin email allow-list, not `PlatformAdmin` auth, reached from an "Admin Tools" panel rather than a superadmin login. It is explicitly documented upstream as NOT the `PlatformAdmin` surface. It is not on upstream's `develop` branch yet — do not build against it; track it for a future sync once it merges.
+
+### POST /platform-admin/auth/request-otp
+
+Same behavior as `POST /auth/request-otp`, looked up against `PlatformAdmin` instead of `User`.
+
+```json
+Request: { "email": "admin@bolo.internal" }
+Response 200: { "data": null, "message": "OTP sent to admin@bolo.internal" }
+```
+
+**Errors:** 400 `INVALID_EMAIL` · 404 `ADMIN_NOT_FOUND` · 429 `RATE_LIMITED` · 502 `EMAIL_DELIVERY_FAILED`
+
+---
+
+### POST /platform-admin/auth/verify-otp
+
+```json
+Request: { "email": "admin@bolo.internal", "otp": "482910" }
+
+Response 200:
+{
+  "data": { "adminId": "PAD00001", "name": "Ops Admin", "email": "admin@bolo.internal" },
+  "message": "Login successful"
+}
+
+Set-Cookie: admin_token=<jwt>; HttpOnly; SameSite=Lax; Path=/; Max-Age=604800
+```
+
+**Errors:** 400 `INVALID_OTP` (includes `data.attemptsRemaining`) · 400 `OTP_EXPIRED` · 429 (locked 15 min)
+
+---
+
+### POST /platform-admin/auth/logout
+
+Clears the `admin_token` cookie server-side. **Access (4 endpoints below):** `requirePlatformAdmin` — a distinct middleware; none of them accept or trust a tenant-scoped `token` cookie.
+
+---
+
+### POST /platform-admin/tenants — create Tenant + first TOP user
+
+Replaces what would otherwise be a public, unauthenticated tenant-registration endpoint — this project has never had one (Phase 1 tenant creation has always gone through fixtures/seed data, so there's no equivalent gap to close here, unlike upstream's removed `POST /onboard/register`).
+
+```json
+Request:
+{
+  "tenantName": "ABC College",
+  "urlSlug": "abc-college",
+  "vertical": "EDUCATION",
+  "adminName": "Dr. Kamal Sethi",
+  "adminEmail": "dean@abc.edu",
+  "adminPhone": "+919876543210",
+  "roleLabel": "Dean",
+  "preferredLang": "EN"
+}
+
+Response 201:
+{
+  "data": {
+    "tenantId": "uuid",
+    "tenantName": "ABC College",
+    "urlSlug": "abc-college",
+    "vertical": "EDUCATION",
+    "createdAt": "2026-07-15T10:00:00+05:30",
+    "admin": { "userId": "uuid", "name": "Dr. Kamal Sethi", "email": "dean@abc.edu", "roleLevel": "TOP", "roleLabel": "Dean" }
+  },
+  "message": "Tenant registered"
+}
+```
+
+**`urlSlug`** — required, `^[a-z0-9]+(-[a-z0-9]+)*$`, 2-40 chars. **Rejected, not auto-transformed** if malformed. Must be unique across all tenants. Requires `Tenant.urlSlug` to exist as a field first (not yet built here).
+
+Writes an `AuditLog` row: `action: TENANT_CREATED`, `actorType: PLATFORM_ADMIN`, `entityType: "Tenant"`.
+
+**Errors:** 400 `VALIDATION_ERROR` · 400 `INVALID_URL_SLUG` · 400 `TENANT_NAME_TAKEN` · 400 `URL_SLUG_TAKEN` · 400 `EMAIL_TAKEN` · 401
+
+---
+
+### GET /platform-admin/tenants — list all tenants
+
+```json
+Response 200:
+{ "data": [ { "tenantId": "uuid", "name": "ABC College", "vertical": "EDUCATION", "createdAt": "...", "memberCount": 42, "departmentCount": 5 } ] }
+```
+
+---
+
+### POST /platform-admin/tenants/:tenantId/members — add a user to any tenant
+
+Same request body/validation as tenant self-service member add, but `tenantId` comes from the URL param instead of the caller's own membership.
+
+```json
+Request:
+{ "name": "Prof. Asha Nair", "email": "asha@abc.edu", "roleLevel": "MID", "roleLabel": "HoD", "departmentId": "uuid" }
+
+Response 201:
+{ "data": { "userId": "uuid", "email": "asha@abc.edu" }, "message": "Member added" }
+```
+
+Writes an `AuditLog` row: `action: MEMBER_ADDED`, `actorType: PLATFORM_ADMIN`, `entityType: "User"`.
+
+**Errors:** 400 `VALIDATION_ERROR` · 400 `EMAIL_ALREADY_IN_TENANT` · 404 `NOT_FOUND` (tenant) · 401
+
+---
+
+### DELETE /platform-admin/tenants/:tenantId/members/:userId — remove a user from any tenant
+
+Hard-deletes the `TenantMembership` row only — `User` row is left intact. Active tasks are **not** cancelled automatically.
+
+```json
+Response 200: { "data": null, "message": "Member removed" }
+```
+
+Writes an `AuditLog` row: `action: MEMBER_REMOVED`, `actorType: PLATFORM_ADMIN`, `entityType: "User"`.
+
+**Errors:** 404 `NOT_FOUND` · 401
+
+---
+
+### POST /platform-admin/tenants/:tenantId/members/import — bulk Excel/JSON import into any tenant
+
+Same underlying import logic as the tenant self-service bulk import — identical Excel/JSON contract, validation, idempotent upsert-by-email behavior — but `tenantId` comes from the URL param, so a platform admin can bulk-import members into **any** tenant.
+
+```json
+Response 200:
+{ "success": true, "message": "Import complete", "data": { "created": 5, "updated": 1, "skipped": 0, "errors": [] } }
+```
+
+Writes a single `AuditLog` row per call: `action: MEMBERS_BULK_IMPORTED`, `actorType: PLATFORM_ADMIN`, `entityType: "Tenant"`.
+
+**Errors:** 400 `VALIDATION_ERROR` / `INVALID_FILE` · 404 `NOT_FOUND` (tenant) · 401
+
+---
+
 ## Appendix — Route × Middleware Matrix
 
 | Route | Auth | Role guard | Ownership check |
 |---|---|---|---|
 | POST /auth/\* | none | none | none |
+| GET /tasks?view=open\|overdue\|done_a\|by_label\|due_this_week | requireAuth | none | tenantId scope; not yet built here |
 | GET /tasks | requireAuth | none | tenantId scope |
 | GET /tasks/counts | requireAuth | none | service: userId + tenantId = me |
 | POST /tasks | requireAuth | none | caller becomes assigner |
@@ -2413,4 +2592,10 @@ Dedup within the file is case-insensitive (last row wins; earlier duplicate rows
 | POST /billing/cancel | requireAuth | requireOrgRole(['TOP']) | tenantId from JWT |
 | GET /settings/nudge-config | requireAuth | requireOrgRole(['TOP']) | tenantId from JWT |
 | PATCH /settings/nudge-config | requireAuth | requireOrgRole(['TOP']) | tenantId from JWT |
+| POST /platform-admin/auth/\* | none | none | none — parallel to /auth/\*, admin_token cookie; not yet built here |
+| POST /platform-admin/tenants | requirePlatformAdmin | none | none — cross-tenant by design; not yet built here |
+| GET /platform-admin/tenants | requirePlatformAdmin | none | none — cross-tenant by design; not yet built here |
+| POST /platform-admin/tenants/:tenantId/members | requirePlatformAdmin | none | none — cross-tenant by design; not yet built here |
+| DELETE /platform-admin/tenants/:tenantId/members/:userId | requirePlatformAdmin | none | none — cross-tenant by design; not yet built here |
+| POST /platform-admin/tenants/:tenantId/members/import | requirePlatformAdmin | none | none — cross-tenant by design; not yet built here |
 | GET /health | none | none | none |

@@ -1,5 +1,23 @@
 from apps.notifications.nudge_rules import DUE_PROXIMITY_CAPS
 
+
+def serialize_notification(notification) -> dict:
+    """GET /notifications list item (docs/api/api-spec.md §11, general panel --
+    distinct from the AI Nudge feed's own serializers above)."""
+    return {
+        "id": str(notification.id),
+        "type": notification.type,
+        "entityType": notification.entity_type,
+        "entityId": notification.entity_id,
+        "message": notification.message,
+        "actorName": notification.actor_name,
+        "entityTitle": notification.entity_title,
+        "entityContext": notification.entity_context,
+        "isRead": notification.is_read,
+        "readAt": notification.read_at.isoformat() if notification.read_at else None,
+        "createdAt": notification.created_at.isoformat(),
+    }
+
 _FOLLOWUP_SUBTITLES = {
     "followup_no_progress": "Accepted but no progress update since",
     "followup_unanswered_comment": "You owe a reply on this task",

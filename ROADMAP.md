@@ -194,42 +194,82 @@ Not in the original roadmap — this phase exists because `PlatformAdmin`'s real
 
 Deferred on 2026-08-23's initial build as out of scope; **re-scoped in per the corrected business model** — once AIBIGO's own team (not Integrate18) is the one creating tenants and adding/removing members, "who at AIBIGO did what, when" is a real accountability requirement, not a nice-to-have. Requires extending the generic audit middleware (`apps/common/audit_middleware.py`) to resolve a **second actor source** — it currently only decodes the tenant-user `token` cookie to find `actorId`/`tenantId`; it needs an equivalent path for `admin_token` → `actorType: PLATFORM_ADMIN`, `actorId: null` (a `PlatformAdmin` isn't a `User` row), with the admin's identity captured in the audit row's `metadata` instead. `AuditAction.TENANT_CREATED`/`MEMBER_ADDED`/`MEMBER_REMOVED` already exist in the enum (confirmed present since Phase 1) — this is config-table wiring, not new schema.
 
-### 15c — Multi-format bulk import (Excel `.xlsx` + CSV + JSON)
+### 15c — Multi-format bulk import (Excel `.xlsx` + CSV + JSON) — a small ETL pipeline
 
-One shared internal pipeline, not three parallel implementations:
+This is deliberately framed as **ETL (Extract → Transform → Load)**, not "file upload handling" — it's the same shape as a real data-engineering pipeline, just small-scale, and that's the correct term to use for it (resume/interview value: "built a multi-format data ingestion pipeline" is a stronger, more precise claim than "added CSV import").
 
 ```
-.xlsx ──┐
-.csv  ──┼──▶ format-specific parser ──▶ list[dict] (normalized) ──▶ ONE validator/upserter
-.json ──┘      (pandas.read_excel /                                  (per-row, same for
-                 pandas.read_csv /                                    all three formats)
-                 json.loads)
+EXTRACT              TRANSFORM                                    LOAD
+────────             ─────────────────────────────────            ────
+.xlsx ──┐            1. Normalize headers                         Validated,
+.csv  ──┼─► DataFrame 2. Clean/coerce types                   ──►  deduped rows
+.json ──┘            3. Validate (vectorized where possible)       → Django ORM
+                      4. Dedup within file                           upsert
+                      5. Neutralize formula-injection risk
 ```
 
-- `pandas` for Excel/CSV parsing — handles encoding/header-whitespace/type-inference far better than hand-rolled `csv`/`openpyxl` code would. New dependency.
-- **Edge cases to handle explicitly, not incidentally:**
-  - CSV encoding: try `utf-8-sig` (handles BOM) first, fall back to `latin-1` (common Excel-exported-CSV case)
-  - Header matching: case-insensitive, whitespace-stripped, against the documented column set (`name`, `email`, `roleLevel`, `roleLabel`, `departmentName`, `phone`, `canBroadcast`, `isHead`)
-  - Unknown `roleLevel` value in a row → reject **that row only**, never let an unrecognized value reach the ORM (same defense-in-depth principle Global Search's status/priority handling already uses)
-  - Duplicate email *within* the same file → last row wins, earlier duplicates reported as skipped, not silently dropped
-  - One bad row must never fail the whole batch — response shape is `{created, updated, skipped, errors: [{row, field, reason}]}`
-  - **CSV/Excel formula injection** (a real, under-known security issue): a cell starting with `=`/`+`/`-`/`@` can execute as a formula if this data is ever re-exported and reopened in Excel by another admin — neutralize (prefix) on ingest, defense-in-depth even though there's no re-export feature yet
-  - File size / row count caps up front; process in chunks, one DB transaction per chunk (not the whole file), so a mid-import crash leaves a clean, known boundary rather than an ambiguous partial state
+**Extract** — one shared output shape regardless of source format:
+- Excel: `pd.read_excel(file, engine="openpyxl")`. Real gotchas to handle, not just the happy path: multiple sheets (which one is the data?), a title row above the real header row, merged cells producing `NaN` in the cells beneath them.
+- CSV: `pd.read_csv(file, encoding="utf-8-sig")` — the `-sig` variant eats a UTF-8 BOM automatically (the most common "why did my first header get mangled" bug from Excel-exported CSVs); fall back to `latin-1` on `UnicodeDecodeError`.
+- JSON: plain `json.loads()` + a DRF serializer, not pandas — JSON is already structured, so pandas' value-add (handling messy tabular data) doesn't apply here. Worth being explicit about this choice rather than reaching for pandas everywhere by default.
+- New dependency: `pandas` (+ `openpyxl`, already implied by the Excel engine above).
 
-**Talking point:** this is the difference between "I used pandas to read a file" and "I designed an import pipeline" — the three-line happy path is easy; the value is in the edge-case list above, especially the formula-injection handling, which most engineers doing a "quick CSV import" have never even heard of.
+**Transform** — the substantive part:
+```python
+# Header normalization -- map every messy real-world variant to one canonical name
+df.columns = df.columns.str.strip().str.lower()
+df = df.rename(columns={"e-mail": "email", "email address": "email", "role": "role_level", ...})
 
-### 15d — `bolo-web` operator dashboard
+# Type coercion -- a "boolean" column from Excel/CSV is never actually a bool
+BOOL_MAP = {"true": True, "yes": True, "1": True, "false": False, "no": False, "0": False}
+df["can_broadcast"] = df["can_broadcast"].astype(str).str.lower().map(BOOL_MAP).fillna(False)
 
-Built **inside `bolo-web`**, not a separate app — reconsidered from an initial "separate app" instinct after weighing it against this project's actual current scale (one client, small team): a separate deployable app would mean rebuilding the design system/API client/query setup from scratch for a real-but-marginal security gain, since the actual security boundary (a valid `admin_token`) is enforced server-side on every request regardless of which frontend calls it.
+# Vectorized validation -- fast because it's not a per-row Python loop
+df["email_valid"] = df["email"].str.match(EMAIL_REGEX, na=False)
+df["role_valid"] = df["role_level"].isin(["TOP", "MID", "EXECUTOR"])  # unknown value -> reject
+                                                                        # that row only, never
+                                                                        # let it reach the ORM
+                                                                        # (same defense-in-depth
+                                                                        # principle Global Search's
+                                                                        # status/priority handling
+                                                                        # already uses)
 
-- **New top-level route branch, sibling to tenant routing, not nested under it:** `/platform-admin/login`, `/platform-admin/otp`, `/platform-admin/dashboard`, `/platform-admin/tenants/:id`. Never nested under `ROUTES.APP` (`/:tenantSlug/:userSlug`) — the two auth models must never structurally overlap even though they're in one codebase.
-- **New `PlatformAdminPrivateRoute`** wrapper, distinct from the existing tenant `PrivateRoute` — checks platform-admin session via a new `GET /platform-admin/auth/me` endpoint (not built yet — needed so the SPA can ask "am I still logged in, as who" on page load without hitting a real data endpoint first).
-- **`admin_token` and `token`/`refresh_token` coexist in one browser without collision by design** (different cookie names, different JWT shape) — a `bolo-web` API call to `/api/v1/tasks` sends `token`; a call to `/api/v1/platform-admin/tenants` sends `admin_token`. No shared state to manage client-side.
-- **Code-split the `/platform-admin/*` branch** (`React.lazy`) so a normal tenant user's `bolo-web` bundle never downloads the operator dashboard's code at all — free defense-in-depth on top of the real server-side gate.
-- **Pages:** two-step login (email → OTP), tenant list (table: name, vertical, member/department counts), create-tenant form (with debounced live `urlSlug` availability check before submit), tenant detail (member list + add/remove + bulk-import), bulk-import UI (drag-drop, format auto-detect or tabs, **preview table before committing**, then a results screen with per-row success/error and a "download failed rows" action).
-- Reuses `bolo-web`'s existing design system, API client, and TanStack Query conventions — no new frontend infra needed beyond the new route branch and its own session hook.
+# Dedup within the file -- last occurrence wins, earlier ones reported as skipped
+dupes = df.duplicated(subset=["email"], keep="last")
 
-**Talking point:** the corrected business model itself (Integrate18 → AIBIGO → their tenants) is the strongest thing to lead with here — it demonstrates you can reason about *who the actual actors in a system are*, not just implement whatever a spec says. Pair it with the CSV-injection handling as your "I thought about the edge case nobody asks about" answer.
+# CSV/Excel formula injection (a real, under-known security issue): a cell starting with
+# =/+/-/@ can execute as a formula if this data is ever re-exported and reopened in Excel
+# by another admin -- neutralize on ingest, defense-in-depth even with no re-export feature yet
+RISKY_PREFIXES = ("=", "+", "-", "@")
+df["name"] = df["name"].apply(
+    lambda v: f"'{v}" if isinstance(v, str) and v.startswith(RISKY_PREFIXES) else v
+)
+```
+
+**Load** — idempotent upsert, chunked, one DB transaction per chunk (not the whole file) so a mid-import crash leaves a clean, known boundary rather than an ambiguous partial state:
+```python
+for _, row in valid_rows.iterrows():
+    User.objects.update_or_create(email=row["email"], defaults={"name": row["name"], ...})
+```
+
+**Response shape** — structured reporting, not a boolean success/fail:
+```json
+{ "created": 12, "updated": 3, "skipped": 1, "errors": [{"row": 5, "field": "roleLevel", "reason": "must be TOP, MID, or EXECUTOR"}] }
+```
+
+**Talking point:** the difference between "I used pandas to read a file" and "I designed an ETL pipeline" is entirely in the Transform stage above — vectorized validation (not naive row-by-row loops, which shows you understand *why* pandas is fast, not just that it's a library that reads Excel), defensive type coercion against real-world messy input, and the formula-injection handling, which most engineers doing a "quick CSV import" have never even heard of.
+
+### 15d — Platform Admin Console: standalone React app
+
+**Decision (2026-08-24, reconsidered from an earlier "build inside `bolo-web`" instinct):** a **separate, standalone React app** — its own repo, own `Vite` scaffold, own deploy, talking to this Django backend purely over `/api/v1/platform-admin/*`. Chosen deliberately over the `bolo-web`-embedded option for two reasons: (1) it's a self-contained artifact — demoable end-to-end without touching `bolo-web` at all, a cleaner standalone portfolio piece than "routes added to an existing app"; (2) the real security boundary (a valid `admin_token`, checked server-side on every request) is identical either way, so embedding it in `bolo-web` bought little beyond reusing its design system — a cost worth paying here for a cleaner, independent build.
+
+- **New repo/project**: `npm create vite@latest bolo-admin-console -- --template react-ts`. TanStack Query for data-fetching (same convention `bolo-web` already uses, kept for consistency even though this is a separate codebase). A thin `fetch`/`axios` API client pointed at this backend's `/api/v1/platform-admin/*`, always `credentials: "include"` so the httpOnly `admin_token` cookie rides along automatically — the app itself never reads or stores the token.
+- **New backend endpoint needed**: `GET /platform-admin/auth/me` — doesn't exist yet. Lets the SPA ask "am I still logged in, as who" once on page load, without hitting a real data endpoint first. Belongs with 15a/15b as backend prep before the frontend needs it.
+- **Pages**: `/login` (email → "Send OTP") → `/otp` (6-digit code, resend-in-60s countdown matching the backend's real cooldown) → `/dashboard` (tenant list: name, vertical, member/department counts) → `/tenants/new` (create-tenant form, debounced live `urlSlug` availability check before submit) → `/tenants/:id` (member table + "Add Member" modal + "Bulk Import" modal).
+- **Auth flow**: a top-level route guard calls `GET /platform-admin/auth/me` on load — `401` redirects to `/login`, `200` renders the app and caches the admin's identity in the query cache. A global fetch/axios response interceptor handles `401` from any call the same way, so the redirect logic lives in one place.
+- **Bulk-import UI** (the component worth the most polish — best interview talking point of the frontend half): drag-and-drop (or plain file input) accepting `.xlsx`/`.csv`/`.json` → upload immediately, no client-side parsing (the backend's ETL pipeline in 15c does all of it) → a **results table**, one row per import row, `[Row #, Status, Detail]`, green check for created/updated rows, red X with the specific reason for errors → a "Download failed rows" button that serializes the response's `errors[]` array back into a downloadable CSV client-side, so the admin can fix just those rows and re-upload.
+
+**Talking point:** the corrected business model (Integrate18 → AIBIGO → their tenants, §Phase 15 intro above) is the strongest thing to lead with here — it demonstrates reasoning about *who the actual actors in a system are*, not just implementing whatever a spec says. Pair it with the ETL formula-injection handling (15c) as your "I thought about the edge case nobody asks about" answer, and the standalone-app decision itself as a "here's a tradeoff I made deliberately, and here's why" answer.
 
 ---
 
@@ -237,4 +277,4 @@ Built **inside `bolo-web`**, not a separate app — reconsidered from an initial
 
 Phases 0-3 first (bootstrap → models → auth → tasks) get you a working, demoable core. Phases 4-9 (pagination, supporting entities, broadcasts, search, notifications, OpenAI) are the "impressive feature" layer — build in whatever order keeps you motivated, they're mostly independent of each other once Phase 3 exists. Phases 10-14 (audit/observability, testing, caching, docker/CI, cheat-sheet) should be woven in continuously, not left to the end — "I wrote tests as I went" is a better interview answer than "I added tests at the end."
 
-**Phase 15 (Platform Admin Console)** sits alongside Phases 4-9 rather than after them — 15a (RBAC) and 15b (audit trail) are small and worth doing before 15c/15d grow the surface area; 15c (multi-format import) and 15d (the `bolo-web` dashboard) are independent of each other and can build in either order.
+**Phase 15 (Platform Admin Console) is deliberately sequenced *after* Phases 9-14 (2026-08-24 decision)** — the leftover core-backend phases (OpenAI extraction, observability/`structlog`, caching, Docker/CI, the interview cheat-sheet) finish the main `bolo-backend-django` story before starting a second, separate frontend project. Within Phase 15 itself, once its turn comes: 15a (RBAC) and 15b (audit trail) are small and worth doing before 15c/15d grow the surface area; 15c (the ETL import pipeline, backend) and 15d (the standalone React app, frontend) are independent of each other and can build in either order once 15a/15b land.

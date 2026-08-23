@@ -5,6 +5,15 @@
 
 ---
 
+## 2026-08-24
+
+- `[STD]` **`ROADMAP.md` Phase 15 revised — standalone frontend decision + ETL detail, sequenced after Phases 9-14.** Two corrections to the 2026-08-23 (3) planning entry, both from further discussion, no code this session:
+  - **15d flipped from "inside `bolo-web`" to a standalone React app** (`bolo-admin-console`, own repo/Vite scaffold/deploy) — reconsidered specifically for portfolio value: a self-contained artifact demoable end-to-end without touching `bolo-web` is a stronger standalone story than routes added to an existing app, and the real security boundary (`admin_token` checked server-side on every request) is identical either way, so embedding it in `bolo-web` bought little beyond reusing its design system.
+  - **15c (multi-format bulk import) expanded into a full ETL (Extract/Transform/Load) writeup** — explicit pandas-based stages (header normalization, boolean/type coercion, vectorized validation, within-file dedup, formula-injection neutralization), concrete code sketches for each stage, and the Django-side idempotent-upsert Load step. Framed deliberately as "ETL pipeline," the correct and more resume-precise term, not "file upload handling."
+  - **Explicit sequencing decision: Phase 15 moved to *after* Phases 9-14**, not alongside them as originally planned — the leftover core-backend phases (OpenAI extraction, observability, caching, Docker/CI, interview cheat-sheet) finish the main `bolo-backend-django` story before a second, separate frontend project starts.
+
+---
+
 ## 2026-08-23 (7)
 
 - `[BE]` **Profile picture: `GET`/`PATCH /me`, presign/confirm/delete, streamed cross-member access** (`apps/users`) — closes the last and biggest of the four remaining contract gaps from the 2026-08-22 docs re-sync. `apps/users` had no `views.py`/`urls.py` content at all before this — Phase 1 scaffolded only the model.

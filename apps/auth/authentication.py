@@ -23,6 +23,15 @@ class CookieJWTAuthentication(BaseAuthentication):
         except TokenError as exc:
             raise exceptions.AuthenticationFailed("Invalid or expired token") from exc
 
+        # A well-formed, unexpired JWT signed with this project's key but shaped
+        # for a different auth space (e.g. PlatformAdmin's admin_token, which
+        # carries adminId/isPlatformAdmin, never userId/tenantId) passes
+        # AccessToken() above -- both are minted from the same SIMPLE_JWT
+        # signing key -- but has no userId claim to index into. Reject that
+        # cleanly as 401 rather than letting an uncaught KeyError 500.
+        if "userId" not in token or "tenantId" not in token or "roleLevel" not in token:
+            raise exceptions.AuthenticationFailed("Not a tenant-user token")
+
         try:
             user = UserRepository.get_by_id(token["userId"])
         except NotFoundError as exc:

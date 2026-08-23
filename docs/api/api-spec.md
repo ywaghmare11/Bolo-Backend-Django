@@ -160,7 +160,7 @@ Response 200:
 Set-Cookie: token=<jwt>; HttpOnly; SameSite=Strict; Path=/; (no Max-Age — session cookie)
 ```
 
-**`tenantSlug`** (upstream added 2026-08-09; `Tenant.url_slug` built here 2026-08-22, migration `0003`) — the tenant's `urlSlug`. Upstream's `bolo-web` uses it + a slugified first name to build a post-login URL path. Purely cosmetic/frontend routing — never an authorization signal. **Nullable in this project** (unlike upstream's required field) — the real assignment path is `POST /platform-admin/tenants`, not built here yet (see CLAUDE.md), so existing/newly-created tenants can have `url_slug = null` until that lands; `tenantSlug` in this response is `null` in that case.
+**`tenantSlug`** (upstream added 2026-08-09; `Tenant.url_slug` + its `POST /platform-admin/tenants` assignment path both built here, 2026-08-22/23) — the tenant's `urlSlug`. Upstream's `bolo-web` uses it + a slugified first name to build a post-login URL path. Purely cosmetic/frontend routing — never an authorization signal. **Nullable in this project** (unlike upstream's required field) — any tenant predating this endpoint (`seed_dev_data`, factories) has no slug, so `tenantSlug` is `null` in that case.
 
 **Errors:** 400 `INVALID_OTP` (includes `data.attemptsRemaining`) · 400 `OTP_EXPIRED` · 429 `RATE_LIMITED` (locked 15 min, `data.attemptsRemaining: 0`)
 
@@ -2388,7 +2388,7 @@ Dedup within the file is case-insensitive (last row wins; earlier duplicate rows
 
 ---
 
-## 22. Platform Admin (Superadmin) *(bolo-backend-django sync 2026-08-22, upstream built 2026-07-15, W35/W98 resolved — models scaffolded here since Phase 1, but no auth/views/services/repositories/urls built yet; see CLAUDE.md)*
+## 22. Platform Admin (Superadmin) *(upstream built 2026-07-15, W35/W98 resolved — core CRUD built here 2026-08-23: OTP auth, create/list tenant, add/remove member. **Deferred, explicitly not built:** Excel/JSON bulk-import (`POST .../members/import`, would need a new openpyxl dependency and has no self-service equivalent to mirror), and wiring `AuditLog` rows for these actions into the generic audit middleware — see CLAUDE.md)*
 
 A `PlatformAdmin` is a cross-tenant actor, outside `Tenant`/RLS scoping entirely — not a `User`, not a `TenantMembership` role. It registers new tenants and can add/remove users in **any** tenant. No self-registration: rows are provisioned only via an ops-run seed script. See `docs/architecture/domain-model.md`'s "PlatformAdmin" section for the model shape.
 
@@ -2435,7 +2435,7 @@ Clears the `admin_token` cookie server-side. **Access (4 endpoints below):** `re
 
 ### POST /platform-admin/tenants — create Tenant + first TOP user
 
-Replaces what would otherwise be a public, unauthenticated tenant-registration endpoint — this project has never had one (Phase 1 tenant creation has always gone through fixtures/seed data, so there's no equivalent gap to close here, unlike upstream's removed `POST /onboard/register`).
+Replaces what would otherwise be a public, unauthenticated tenant-registration endpoint — this project has never had one (Phase 1 tenant creation had always gone through fixtures/seed data until this endpoint, so there's no equivalent public-endpoint-removal gap to close here, unlike upstream's removed `POST /onboard/register`).
 
 ```json
 Request:
@@ -2464,9 +2464,9 @@ Response 201:
 }
 ```
 
-**`urlSlug`** — required, `^[a-z0-9]+(-[a-z0-9]+)*$`, 2-40 chars. **Rejected, not auto-transformed** if malformed. Must be unique across all tenants. `Tenant.url_slug` exists as a field here (built 2026-08-22, migration `0003`) — this endpoint itself (the assignment path) is still not built, see the PlatformAdmin section above.
+**`urlSlug`** — required, `^[a-z0-9]+(-[a-z0-9]+)*$`, 2-40 chars. **Rejected, not auto-transformed** if malformed (`400 INVALID_URL_SLUG`). Must be unique across all tenants.
 
-Writes an `AuditLog` row: `action: TENANT_CREATED`, `actorType: PLATFORM_ADMIN`, `entityType: "Tenant"`.
+**Not yet built:** the `AuditLog` row this action should write (`action: TENANT_CREATED`, `actorType: PLATFORM_ADMIN`, `entityType: "Tenant"`) — the generic audit middleware only resolves the tenant-user `token` cookie for its actor, and extending it for a second actor source (`admin_token`) wasn't in scope for this pass. Same gap on `MEMBER_ADDED`/`MEMBER_REMOVED` below.
 
 **Errors:** 400 `VALIDATION_ERROR` · 400 `INVALID_URL_SLUG` · 400 `TENANT_NAME_TAKEN` · 400 `URL_SLUG_TAKEN` · 400 `EMAIL_TAKEN` · 401
 
@@ -2483,7 +2483,7 @@ Response 200:
 
 ### POST /platform-admin/tenants/:tenantId/members — add a user to any tenant
 
-Same request body/validation as tenant self-service member add, but `tenantId` comes from the URL param instead of the caller's own membership.
+This project has no tenant self-service member-add endpoint to mirror (never built — see CLAUDE.md's contract-gaps list), so this is its own standalone implementation: creates the `User` row (`tenant_id` from the URL param) + a `TenantMembership` in one transaction.
 
 ```json
 Request:
@@ -2493,7 +2493,7 @@ Response 201:
 { "data": { "userId": "uuid", "email": "asha@abc.edu" }, "message": "Member added" }
 ```
 
-Writes an `AuditLog` row: `action: MEMBER_ADDED`, `actorType: PLATFORM_ADMIN`, `entityType: "User"`.
+**Not yet built:** the `AuditLog` row (`action: MEMBER_ADDED`, `actorType: PLATFORM_ADMIN`, `entityType: "User"`) — see the note on `POST /platform-admin/tenants` above.
 
 **Errors:** 400 `VALIDATION_ERROR` · 400 `EMAIL_ALREADY_IN_TENANT` · 404 `NOT_FOUND` (tenant) · 401
 
@@ -2507,15 +2507,15 @@ Hard-deletes the `TenantMembership` row only — `User` row is left intact. Acti
 Response 200: { "data": null, "message": "Member removed" }
 ```
 
-Writes an `AuditLog` row: `action: MEMBER_REMOVED`, `actorType: PLATFORM_ADMIN`, `entityType: "User"`.
+**Not yet built:** the `AuditLog` row (`action: MEMBER_REMOVED`, `actorType: PLATFORM_ADMIN`, `entityType: "User"`).
 
 **Errors:** 404 `NOT_FOUND` · 401
 
 ---
 
-### POST /platform-admin/tenants/:tenantId/members/import — bulk Excel/JSON import into any tenant
+### POST /platform-admin/tenants/:tenantId/members/import — bulk Excel/JSON import into any tenant *(not built here — see CLAUDE.md)*
 
-Same underlying import logic as the tenant self-service bulk import — identical Excel/JSON contract, validation, idempotent upsert-by-email behavior — but `tenantId` comes from the URL param, so a platform admin can bulk-import members into **any** tenant.
+Same underlying import logic as the tenant self-service bulk import — identical Excel/JSON contract, validation, idempotent upsert-by-email behavior — but `tenantId` comes from the URL param, so a platform admin can bulk-import members into **any** tenant. Neither this endpoint nor its self-service equivalent exist in this project yet; would need a new `openpyxl` dependency.
 
 ```json
 Response 200:
@@ -2592,10 +2592,10 @@ Writes a single `AuditLog` row per call: `action: MEMBERS_BULK_IMPORTED`, `actor
 | POST /billing/cancel | requireAuth | requireOrgRole(['TOP']) | tenantId from JWT |
 | GET /settings/nudge-config | requireAuth | requireOrgRole(['TOP']) | tenantId from JWT |
 | PATCH /settings/nudge-config | requireAuth | requireOrgRole(['TOP']) | tenantId from JWT |
-| POST /platform-admin/auth/\* | none | none | none — parallel to /auth/\*, admin_token cookie; not yet built here |
-| POST /platform-admin/tenants | requirePlatformAdmin | none | none — cross-tenant by design; not yet built here |
-| GET /platform-admin/tenants | requirePlatformAdmin | none | none — cross-tenant by design; not yet built here |
-| POST /platform-admin/tenants/:tenantId/members | requirePlatformAdmin | none | none — cross-tenant by design; not yet built here |
-| DELETE /platform-admin/tenants/:tenantId/members/:userId | requirePlatformAdmin | none | none — cross-tenant by design; not yet built here |
-| POST /platform-admin/tenants/:tenantId/members/import | requirePlatformAdmin | none | none — cross-tenant by design; not yet built here |
+| POST /platform-admin/auth/\* | none | none | none — parallel to /auth/\*, admin_token cookie |
+| POST /platform-admin/tenants | requirePlatformAdmin | none | none — cross-tenant by design |
+| GET /platform-admin/tenants | requirePlatformAdmin | none | none — cross-tenant by design |
+| POST /platform-admin/tenants/:tenantId/members | requirePlatformAdmin | none | none — cross-tenant by design |
+| DELETE /platform-admin/tenants/:tenantId/members/:userId | requirePlatformAdmin | none | none — cross-tenant by design |
+| POST /platform-admin/tenants/:tenantId/members/import | requirePlatformAdmin | none | none — cross-tenant by design; **not built here** (bulk-import deferred, see §22) |
 | GET /health | none | none | none |

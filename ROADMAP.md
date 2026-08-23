@@ -172,6 +172,69 @@ Once the above is built, write a one-page `INTERVIEW_NOTES.md`: for each starred
 
 ---
 
+## Phase 15 — Platform Admin Console: 3-tier RBAC, audit trail, multi-format onboarding (added 2026-08-23)
+
+Not in the original roadmap — this phase exists because `PlatformAdmin`'s real purpose only became clear once the actual business model was spelled out (see `changelog.md` 2026-08-23 (2) and (3) for the full narrative). Worth stating precisely, because it's the single best "how did you think about multi-tenancy" interview answer this project has:
+
+> **Integrate18** (the vendor/dev shop building BOLO) delivers the product to **AIBIGO Institute Pvt Ltd** (the client). AIBIGO is not a `Tenant` — AIBIGO *operates* BOLO as a business, onboarding their own customers (colleges, CA/CS firms) as `Tenant` rows. This is a standard **B2B2C / operator-reseller** SaaS shape (same pattern as Shopify Plus + agencies, or a white-label LMS vendor whose client resells seats to individual schools) — three distinct access tiers, not two:
+
+| Tier | Who | Mechanism | Status |
+|---|---|---|---|
+| 1. Vendor/infra | Integrate18 engineers | Django's built-in `/admin/` (`is_staff`/`is_superuser`) | Already exists, free from Django |
+| 2. Operator/superadmin | AIBIGO's own ops team | `PlatformAdmin` (`admin_token`, `apps/platform_admin`) | Core CRUD built 2026-08-23 — see below for what's left |
+| 3. Tenant-internal | Each college/firm's own staff | `TenantMembership.role_level` (`TOP`/`MID`/`EXECUTOR`) | Built since Phase 1 |
+
+### 15a — RBAC on `PlatformAdmin` itself
+
+- `PlatformAdmin.role` field. **Scope decision (2026-08-23): implement `SUPER_ADMIN` only for now** — AIBIGO's first ops person is the only real actor today; add `SUPPORT_ADMIN`/`VIEWER` later if/when AIBIGO actually needs to split access within their own team, not speculatively.
+- Carried in the JWT payload (`{adminId, email, isPlatformAdmin, role}`) — no extra DB hit per request, same pattern as tenant-user `roleLevel`.
+- A `HasPlatformAdminRole([...])` permission-class factory, structurally identical to the existing `HasOrgRole([...])` factory (`apps/common/permissions.py`) — same shape, one tier up. Even with only one role today, build the factory now so adding a second role later is a one-line change at each protected view, not a refactor.
+
+### 15b — Un-defer: `AuditLog` for `PlatformAdmin` actions
+
+Deferred on 2026-08-23's initial build as out of scope; **re-scoped in per the corrected business model** — once AIBIGO's own team (not Integrate18) is the one creating tenants and adding/removing members, "who at AIBIGO did what, when" is a real accountability requirement, not a nice-to-have. Requires extending the generic audit middleware (`apps/common/audit_middleware.py`) to resolve a **second actor source** — it currently only decodes the tenant-user `token` cookie to find `actorId`/`tenantId`; it needs an equivalent path for `admin_token` → `actorType: PLATFORM_ADMIN`, `actorId: null` (a `PlatformAdmin` isn't a `User` row), with the admin's identity captured in the audit row's `metadata` instead. `AuditAction.TENANT_CREATED`/`MEMBER_ADDED`/`MEMBER_REMOVED` already exist in the enum (confirmed present since Phase 1) — this is config-table wiring, not new schema.
+
+### 15c — Multi-format bulk import (Excel `.xlsx` + CSV + JSON)
+
+One shared internal pipeline, not three parallel implementations:
+
+```
+.xlsx ──┐
+.csv  ──┼──▶ format-specific parser ──▶ list[dict] (normalized) ──▶ ONE validator/upserter
+.json ──┘      (pandas.read_excel /                                  (per-row, same for
+                 pandas.read_csv /                                    all three formats)
+                 json.loads)
+```
+
+- `pandas` for Excel/CSV parsing — handles encoding/header-whitespace/type-inference far better than hand-rolled `csv`/`openpyxl` code would. New dependency.
+- **Edge cases to handle explicitly, not incidentally:**
+  - CSV encoding: try `utf-8-sig` (handles BOM) first, fall back to `latin-1` (common Excel-exported-CSV case)
+  - Header matching: case-insensitive, whitespace-stripped, against the documented column set (`name`, `email`, `roleLevel`, `roleLabel`, `departmentName`, `phone`, `canBroadcast`, `isHead`)
+  - Unknown `roleLevel` value in a row → reject **that row only**, never let an unrecognized value reach the ORM (same defense-in-depth principle Global Search's status/priority handling already uses)
+  - Duplicate email *within* the same file → last row wins, earlier duplicates reported as skipped, not silently dropped
+  - One bad row must never fail the whole batch — response shape is `{created, updated, skipped, errors: [{row, field, reason}]}`
+  - **CSV/Excel formula injection** (a real, under-known security issue): a cell starting with `=`/`+`/`-`/`@` can execute as a formula if this data is ever re-exported and reopened in Excel by another admin — neutralize (prefix) on ingest, defense-in-depth even though there's no re-export feature yet
+  - File size / row count caps up front; process in chunks, one DB transaction per chunk (not the whole file), so a mid-import crash leaves a clean, known boundary rather than an ambiguous partial state
+
+**Talking point:** this is the difference between "I used pandas to read a file" and "I designed an import pipeline" — the three-line happy path is easy; the value is in the edge-case list above, especially the formula-injection handling, which most engineers doing a "quick CSV import" have never even heard of.
+
+### 15d — `bolo-web` operator dashboard
+
+Built **inside `bolo-web`**, not a separate app — reconsidered from an initial "separate app" instinct after weighing it against this project's actual current scale (one client, small team): a separate deployable app would mean rebuilding the design system/API client/query setup from scratch for a real-but-marginal security gain, since the actual security boundary (a valid `admin_token`) is enforced server-side on every request regardless of which frontend calls it.
+
+- **New top-level route branch, sibling to tenant routing, not nested under it:** `/platform-admin/login`, `/platform-admin/otp`, `/platform-admin/dashboard`, `/platform-admin/tenants/:id`. Never nested under `ROUTES.APP` (`/:tenantSlug/:userSlug`) — the two auth models must never structurally overlap even though they're in one codebase.
+- **New `PlatformAdminPrivateRoute`** wrapper, distinct from the existing tenant `PrivateRoute` — checks platform-admin session via a new `GET /platform-admin/auth/me` endpoint (not built yet — needed so the SPA can ask "am I still logged in, as who" on page load without hitting a real data endpoint first).
+- **`admin_token` and `token`/`refresh_token` coexist in one browser without collision by design** (different cookie names, different JWT shape) — a `bolo-web` API call to `/api/v1/tasks` sends `token`; a call to `/api/v1/platform-admin/tenants` sends `admin_token`. No shared state to manage client-side.
+- **Code-split the `/platform-admin/*` branch** (`React.lazy`) so a normal tenant user's `bolo-web` bundle never downloads the operator dashboard's code at all — free defense-in-depth on top of the real server-side gate.
+- **Pages:** two-step login (email → OTP), tenant list (table: name, vertical, member/department counts), create-tenant form (with debounced live `urlSlug` availability check before submit), tenant detail (member list + add/remove + bulk-import), bulk-import UI (drag-drop, format auto-detect or tabs, **preview table before committing**, then a results screen with per-row success/error and a "download failed rows" action).
+- Reuses `bolo-web`'s existing design system, API client, and TanStack Query conventions — no new frontend infra needed beyond the new route branch and its own session hook.
+
+**Talking point:** the corrected business model itself (Integrate18 → AIBIGO → their tenants) is the strongest thing to lead with here — it demonstrates you can reason about *who the actual actors in a system are*, not just implement whatever a spec says. Pair it with the CSV-injection handling as your "I thought about the edge case nobody asks about" answer.
+
+---
+
 ## Suggested order to actually build in
 
 Phases 0-3 first (bootstrap → models → auth → tasks) get you a working, demoable core. Phases 4-9 (pagination, supporting entities, broadcasts, search, notifications, OpenAI) are the "impressive feature" layer — build in whatever order keeps you motivated, they're mostly independent of each other once Phase 3 exists. Phases 10-14 (audit/observability, testing, caching, docker/CI, cheat-sheet) should be woven in continuously, not left to the end — "I wrote tests as I went" is a better interview answer than "I added tests at the end."
+
+**Phase 15 (Platform Admin Console)** sits alongside Phases 4-9 rather than after them — 15a (RBAC) and 15b (audit trail) are small and worth doing before 15c/15d grow the surface area; 15c (multi-format import) and 15d (the `bolo-web` dashboard) are independent of each other and can build in either order.

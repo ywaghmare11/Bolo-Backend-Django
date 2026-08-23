@@ -5,6 +5,16 @@
 
 ---
 
+## 2026-08-23 (2)
+
+- `[BE]` **Broadcast Notices: W110 "Entire Institution" + `sent`-view `audienceSize`/`from`/`to`/`updatedAt`** (`apps/broadcasts`) — closes the second of the four remaining contract gaps from the 2026-08-22 docs re-sync.
+  - **W110**: `BroadcastService.publish` no longer rejects an empty `audienceDeptIds`+`audienceRoleLevels` combination with `DRAFT_MISSING_FIELDS` — publishing with both empty is now a valid, explicit "Entire Institution" scope, matching upstream's 2026-07-25 stop-gap. Turned out to be a small change: `resolve_audience_member_user_ids` and `_caller_matches_audience` already treated "no restriction on this dimension" as "everyone matches" (no filter applied when a list is empty) — the publish-time validation gate was the only place still blocking it, so removing it was sufficient; no repository logic needed changing.
+  - **`sent`-view additions**: `updatedAt` (the model already had it via `TimestampedModel`, just wasn't serialized), `audienceSize` (a **live** per-row count — `BroadcastRepository.attach_audience_size`, called on the paginated page the same way `TaskService.attach_latest_comments` already does for tasks — not a publish-time snapshot, since a member who joins after publish can still see/ack an active notice), and optional `from`/`to` query params filtering `sent` by `createdAt`.
+  - Docs (`api-spec.md`) had five separate "not yet built here" markers from the sync — all updated in place rather than left stale in the other direction.
+  - 6 new/replaced tests (247 total, all green): the old `test_publish_without_audience_rejected` replaced with two W110 tests (reaches everyone, specifically reaches a member with no department assigned — the exact gap W110 exists to close), plus `sent`-view tests for `updatedAt`/live `audienceSize`/`from`-`to` filtering/invalid-date rejection, plus confirming `audienceSize` is absent on `received` rows. `ruff check` clean.
+
+---
+
 ## 2026-08-23
 
 - `[BE]` `[INFRA]` **`Tenant.url_slug` + API trailing-slash fix + local dev infra.**

@@ -95,17 +95,21 @@ class BroadcastService:
         return broadcast
 
     @staticmethod
-    def list_broadcasts(user, tenant_id, view):
+    def list_broadcasts(user, tenant_id, view, from_date=None, to_date=None):
         if view not in (None, "received", "sent"):
             raise ValidationError("view must be 'received' or 'sent'")
         if view == "sent":
-            return BroadcastRepository.list_sent(tenant_id, user.id), False
+            return BroadcastRepository.list_sent(tenant_id, user.id, from_date, to_date), False
 
         membership = MembershipRepository.get_profile_for_user(user.id)
         qs = BroadcastRepository.list_received(
             tenant_id, user.id, membership.department_id, membership.role_level,
         )
         return qs, True
+
+    @staticmethod
+    def attach_audience_size(tenant_id, broadcasts):
+        return BroadcastRepository.attach_audience_size(tenant_id, broadcasts)
 
     @staticmethod
     def publish(user, tenant_id, broadcast_id):
@@ -115,11 +119,13 @@ class BroadcastService:
 
         dept_ids = [d.department_id for d in broadcast.audience_depts.all()]
         role_levels = [r.role_level for r in broadcast.audience_role_levels.all()]
-        if not dept_ids and not role_levels:
-            raise ValidationError(
-                "Audience scope (department + role level) is required to publish a broadcast",
-                code="DRAFT_MISSING_FIELDS",
-            )
+        # W110 (2026-08-23): both empty is now a valid, explicit "Entire Institution"
+        # audience, not a rejected DRAFT_MISSING_FIELDS -- there was previously no way
+        # to reach 100% of a tenant (one role level misses other roles, every
+        # department excludes members with none assigned). resolve_audience_member_user_ids
+        # and _caller_matches_audience already treat "no restriction on this dimension"
+        # as "everyone matches" with no filter -- this publish-time gate was the only
+        # place still blocking it.
 
         broadcast.status = BroadcastStatus.PUBLISHED
         broadcast.expires_at = timezone.now() + timedelta(hours=24)

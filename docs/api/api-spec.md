@@ -59,7 +59,7 @@ All responses produced by `successResponse()` / `failureResponse()` from `utils/
 { "success": false, "error": { "code": "SUBTASK_DUE_DATE_INVALID", "message": "Subtask due date must be earlier than parent task due date" } }
 { "success": false, "error": { "code": "REASSIGN_BLOCKED", "message": "Cannot reassign — this task has existing subtasks" } }
 { "success": false, "error": { "code": "SUBTASKS_INCOMPLETE", "message": "All subtasks must be DONE_D before the parent task can be completed" } }
-{ "success": false, "error": { "code": "DRAFT_MISSING_FIELDS", "message": "Audience scope (department + role level) is required to publish a broadcast" } }
+{ "success": false, "error": { "code": "DRAFT_MISSING_FIELDS", "message": "Title, assignee, and due date are required to move a task out of Draft" } }
 
 // 401 — not authenticated
 { "success": false, "error": { "code": "UNAUTHENTICATED", "message": "Authentication required" } }
@@ -1080,12 +1080,12 @@ Response 201:
 
 ## 10. Broadcast Notices
 
-**Implementation status (bolo-backend-django, built 2026-08-07):** CRUD + publish + list + ack + ack-count + both image endpoints below are all built (`apps/broadcasts/`). Server-side HTML re-sanitization uses `bleach`. **Not yet built (bolo-backend-django sync 2026-08-22 — see CLAUDE.md):** the W110 "Entire Institution" stop-gap (this project still hard-rejects publish with `DRAFT_MISSING_FIELDS` when both audience fields are empty), the `sent`-view `audienceSize`/`from`/`to`/`updatedAt` additions below, and the "notify newly-added recipients on audience-widening edit" rule (that one **is** already built here, ahead of when it was added to this doc).
+**Implementation status:** CRUD + publish + list + ack + ack-count + both image endpoints below are all built (`apps/broadcasts/`, 2026-08-07). Server-side HTML re-sanitization uses `bleach`. The W110 "Entire Institution" stop-gap and the `sent`-view `audienceSize`/`from`/`to`/`updatedAt` additions were both built 2026-08-23. The "notify newly-added recipients on audience-widening edit" rule was built ahead of when it was added to this doc, 2026-08-07.
 
 ### Permissions recap:
 - `canBroadcast` on `TenantMembership` gates creation — 403 if false.
-- `audienceDeptIds[]` + `audienceRoleLevels[]` — both may be empty at publish **once W110 below is applied here (not yet — see CLAUDE.md)**; today this project still requires at least one to be non-empty, 400 `DRAFT_MISSING_FIELDS` otherwise. Empty `audienceDeptIds[]` means "not department-restricted" (all departments); empty `audienceRoleLevels[]` means "not role-restricted" (all role levels). `audienceRoleLevels` is a `BroadcastNoticeAudienceRoleLevel` join table (built here, matching upstream's 2026-07-30 change) — same shape as `audienceDeptIds`'s `BroadcastNoticeAudienceDept` join table (2026-07-17) — a notice can target several departments and several role levels at once (e.g. Computer Science + Civil Engineering, HoD + Faculty only).
-- **W110 — "Entire Institution" (bolo-backend-django sync 2026-08-22, upstream stop-gap 2026-07-25, pending client/product-owner confirmation, `open-questions-web-v1.md` §23) — not yet applied in this project's code:** upstream now allows publishing with **both** `audienceDeptIds`/`audienceRoleLevels` empty, treated as "Entire Institution" (reaches every tenant member, including anyone with no department assigned) — because previously there was no way to reach 100% of a tenant (one Role Level misses other roles; every Department excludes members with no department). This project's `_validate_dept_ids`/publish check (`apps/broadcasts/services.py`) still enforces the old mandatory-scope rule. Revert-worthy if the client says mandatory-scope should stand — track against W110's resolution upstream before building.
+- `audienceDeptIds[]` + `audienceRoleLevels[]` — both may be empty at publish (W110, below). Empty `audienceDeptIds[]` means "not department-restricted" (all departments); empty `audienceRoleLevels[]` means "not role-restricted" (all role levels). `audienceRoleLevels` is a `BroadcastNoticeAudienceRoleLevel` join table (matching upstream's 2026-07-30 change) — same shape as `audienceDeptIds`'s `BroadcastNoticeAudienceDept` join table (2026-07-17) — a notice can target several departments and several role levels at once (e.g. Computer Science + Civil Engineering, HoD + Faculty only).
+- **W110 — "Entire Institution" (built here 2026-08-23, matching upstream's 2026-07-25 stop-gap — still pending client/product-owner confirmation upstream, `open-questions-web-v1.md` §23):** publishing with **both** `audienceDeptIds`/`audienceRoleLevels` empty is a valid, explicit "Entire Institution" scope — reaches every tenant member, including anyone with no department assigned. Previously there was no way to reach 100% of a tenant (one Role Level misses other roles; every Department excludes members with no department). `BroadcastService.publish` no longer rejects this combination; `resolve_audience_member_user_ids`/`_caller_matches_audience` already treated "no restriction on this dimension" as "everyone matches," so the publish-time gate was the only place still blocking it. Revert-worthy if the client says mandatory-scope should stand.
 - Broadcasts live for **exactly 1 day** — `expiresAt = publishedAt + 24 hours` (set by server, not client).
 - Stored as `messageJson` (TipTap AST — editor source) + `messageHtml` (sanitized HTML — feed rendering).
 - One image attachment maximum.
@@ -1153,8 +1153,8 @@ GET /api/v1/broadcast-notices?view=sent&page=1&limit=20
 | Param | Required | Values | Default |
 |---|---|---|---|
 | `view` | no | `received` \| `sent` | `received` |
-| `from` | no | ISO date/datetime — `view=sent` only *(bolo-backend-django sync 2026-08-22, not yet built)* | — |
-| `to` | no | ISO date/datetime — `view=sent` only *(not yet built)* | — |
+| `from` | no | ISO date/datetime — `view=sent` only | — |
+| `to` | no | ISO date/datetime — `view=sent` only | — |
 | `page` | no | integer ≥ 1 | `1` |
 | `limit` | no | 1–100 | `20` |
 
@@ -1185,16 +1185,18 @@ Response 200 (view=received):
       "status": "PUBLISHED",
       "expiresAt": "2026-06-21T10:00:00Z",
       "createdAt": "2026-06-20T10:00:00Z",
-      "updatedAt": "2026-06-20T10:00:00Z"   // bolo-backend-django sync 2026-08-22, not yet in the serializer — see CLAUDE.md
+      "updatedAt": "2026-06-20T10:00:00Z"
     }
   ],
   "pagination": { "page": 1, "limit": 20, "total": 12 }
 }
 ```
 
-`view=sent` returns the same shape minus `hasAcknowledged` — this project excludes `DRAFT` there (see above), so `expiresAt` is always set.
+`view=sent` returns the same shape minus `hasAcknowledged`, plus `audienceSize` (below) — this project excludes `DRAFT` there (see above), so `expiresAt` is always set.
 
-**`updatedAt`** (upstream added 2026-07-26, not yet in this project's serializer) — lets a recipient tell whether a notice was edited after it originally went out. Not a simple `updatedAt !== createdAt` check client-side: `publish()` itself bumps `updatedAt` too (DRAFT → PUBLISHED is itself a write), so that alone false-positives on every freshly-published notice. The correct check is `updatedAt` meaningfully later than `expiresAt` minus 24h (the original publish instant, with clock-jitter buffer).
+**`updatedAt`** (upstream added 2026-07-26, built here 2026-08-23) — lets a recipient tell whether a notice was edited after it originally went out. Not a simple `updatedAt !== createdAt` check client-side: `publish()` itself bumps `updatedAt` too (DRAFT → PUBLISHED is itself a write), so that alone false-positives on every freshly-published notice. The correct check is `updatedAt` meaningfully later than `expiresAt` minus 24h (the original publish instant, with clock-jitter buffer).
+
+**`audienceSize`** (built here 2026-08-23, `view=sent` only) — a **live** count of members currently matching that row's audience scope, not a publish-time snapshot: a member who joins the tenant after publish can still see and acknowledge an active notice, so the denominator has to be able to grow the same way (`BroadcastService.attach_audience_size`, called on the paginated page after fetching).
 
 ---
 
@@ -1207,7 +1209,7 @@ Request:
 {
   "messageJson": { /* TipTap JSON AST */ },   // required
   "messageHtml": "<p>All faculty...</p>",     // required — sanitized by client before sending; server re-sanitizes
-  "audienceDeptIds": ["uuid"],                // at least one of audienceDeptIds/audienceRoleLevels required at publish today (see W110 above); optional while DRAFT
+  "audienceDeptIds": ["uuid"],                // both may be empty at publish -- see W110 above; optional while DRAFT
   "audienceRoleLevels": ["EXECUTOR"],        // ditto
   "requiresAcknowledgement": true            // optional — default false
   // image is attached separately via POST /broadcast-notices/:id/image after S3 upload
@@ -1232,7 +1234,7 @@ Response 201:
 ### POST /broadcast-notices/:id/publish — publish a draft
 
 Transitions `DRAFT → PUBLISHED`. Server does in order:
-1. Validates `audienceDeptIds`/`audienceRoleLevels` — today, at least one must be non-empty (400 `DRAFT_MISSING_FIELDS` otherwise); relax to allow "Entire Institution" once W110 above is applied here
+1. No audience validation gate — both `audienceDeptIds`/`audienceRoleLevels` may be empty ("Entire Institution", W110 above)
 2. Sets `expiresAt = now + 24 hours`
 3. Enqueues fan-out notification job (async — not inline)
 
@@ -1251,7 +1253,7 @@ Response 200:
 }
 ```
 
-**Errors:** 400 (DRAFT_MISSING_FIELDS — audience not set, see W110) · 401 · 403 · 404 · 500
+**Errors:** 401 · 403 · 404 · 500 (no `DRAFT_MISSING_FIELDS` — see the "Entire Institution" note in the Permissions recap above, W110)
 
 ---
 

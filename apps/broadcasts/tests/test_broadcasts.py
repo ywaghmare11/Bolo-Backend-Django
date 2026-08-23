@@ -1,4 +1,5 @@
 import io
+from datetime import timedelta
 
 import pytest
 from django.utils import timezone
@@ -148,12 +149,39 @@ class TestBroadcastCreate:
 
 @pytest.mark.django_db
 class TestBroadcastPublish:
-    def test_publish_without_audience_rejected(self, tenant, sender):
+    def test_publish_without_audience_is_entire_institution(
+        self, tenant, sender, cs_faculty, civil_faculty,
+    ):
+        """W110 (2026-08-23): empty audienceDeptIds + empty audienceRoleLevels is
+        now a valid, explicit "Entire Institution" scope -- publishable, and
+        reaches every tenant member, not rejected as DRAFT_MISSING_FIELDS."""
         client = _authed_client(sender, tenant.id)
         draft = _create_draft(client).data["data"]
         resp = client.post(f"/api/v1/broadcast-notices/{draft['id']}/publish/")
-        assert resp.status_code == 400
-        assert resp.data["error"]["code"] == "DRAFT_MISSING_FIELDS"
+        assert resp.status_code == 200
+
+        recipient_ids = set(
+            Notification.objects.filter(
+                type="BROADCAST_POSTED", entity_id=str(draft["id"]),
+            ).values_list("recipient_id", flat=True),
+        )
+        assert {cs_faculty.id, civil_faculty.id} <= recipient_ids
+
+    def test_entire_institution_reaches_member_with_no_department(self, tenant, sender):
+        """A Director/Dean-level member with no department assigned (departmentId
+        optional per domain-model.md) must still be reachable by "Entire
+        Institution" -- the exact gap W110 exists to close."""
+        deptless_member = UserFactory(tenant=tenant)
+        TenantMembershipFactory(
+            tenant=tenant, user=deptless_member, department=None, role_level=OrgRoleLevel.TOP,
+        )
+        client = _authed_client(sender, tenant.id)
+        draft = _create_draft(client).data["data"]
+        client.post(f"/api/v1/broadcast-notices/{draft['id']}/publish/")
+
+        assert Notification.objects.filter(
+            type="BROADCAST_POSTED", entity_id=str(draft["id"]), recipient_id=deptless_member.id,
+        ).exists()
 
     def test_publish_sets_expiry_and_notifies_audience(self, tenant, sender, dept_cs, cs_faculty, civil_faculty):
         client = _authed_client(sender, tenant.id)
@@ -282,6 +310,52 @@ class TestBroadcastList:
         assert len(resp.data["data"]) == 1
         assert resp.data["data"][0]["id"] == published["id"]
         assert "hasAcknowledged" not in resp.data["data"][0]
+
+    def test_sent_includes_updated_at_and_live_audience_size(
+        self, tenant, sender, dept_cs, cs_faculty,
+    ):
+        client = _authed_client(sender, tenant.id)
+        published = _create_draft(client, audienceDeptIds=[str(dept_cs.id)]).data["data"]
+        client.post(f"/api/v1/broadcast-notices/{published['id']}/publish/")
+
+        resp = client.get("/api/v1/broadcast-notices/?view=sent")
+        row = resp.data["data"][0]
+        assert "updatedAt" in row
+        # dept_cs has the sender himself plus cs_faculty
+        assert row["audienceSize"] == 2
+
+        # audienceSize is live, not a publish-time snapshot -- a member added to
+        # the tenant afterwards still counts.
+        new_member = UserFactory(tenant=tenant)
+        TenantMembershipFactory(tenant=tenant, user=new_member, department=dept_cs, role_level=OrgRoleLevel.EXECUTOR)
+        resp2 = client.get("/api/v1/broadcast-notices/?view=sent")
+        assert resp2.data["data"][0]["audienceSize"] == 3
+
+    def test_received_view_has_no_audience_size(self, tenant, sender, dept_cs, cs_faculty):
+        client = _authed_client(sender, tenant.id)
+        draft = _create_draft(client, audienceDeptIds=[str(dept_cs.id)]).data["data"]
+        client.post(f"/api/v1/broadcast-notices/{draft['id']}/publish/")
+
+        resp = _authed_client(cs_faculty, tenant.id).get("/api/v1/broadcast-notices/?view=received")
+        assert "audienceSize" not in resp.data["data"][0]
+
+    def test_sent_filters_by_from_to(self, tenant, sender, dept_cs):
+        client = _authed_client(sender, tenant.id)
+        published = _create_draft(client, audienceDeptIds=[str(dept_cs.id)]).data["data"]
+        client.post(f"/api/v1/broadcast-notices/{published['id']}/publish/")
+
+        future_from = (timezone.now() + timedelta(days=1)).date().isoformat()
+        resp = client.get(f"/api/v1/broadcast-notices/?view=sent&from={future_from}")
+        assert len(resp.data["data"]) == 0
+
+        past_from = (timezone.now() - timedelta(days=1)).date().isoformat()
+        resp2 = client.get(f"/api/v1/broadcast-notices/?view=sent&from={past_from}")
+        assert len(resp2.data["data"]) == 1
+
+    def test_sent_invalid_from_is_400(self, tenant, sender):
+        client = _authed_client(sender, tenant.id)
+        resp = client.get("/api/v1/broadcast-notices/?view=sent&from=not-a-date")
+        assert resp.status_code == 400
 
 
 @pytest.mark.django_db

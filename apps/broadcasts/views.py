@@ -1,6 +1,8 @@
 from urllib.parse import quote
 
 from django.http import StreamingHttpResponse
+from django.utils import timezone
+from django.utils.dateparse import parse_datetime
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
@@ -12,19 +14,37 @@ from apps.broadcasts.serializers import (
     serialize_broadcast_list_item,
 )
 from apps.broadcasts.services import BroadcastImageService, BroadcastService
+from apps.common.exceptions import ValidationError
 from apps.common.pagination import BoloPageNumberPagination
 from apps.common.responses import success_response
+
+
+def _parse_date_param(raw, param_name):
+    if not raw:
+        return None
+    # Accept a bare date ("2026-08-01") by treating it as midnight that day --
+    # parse_datetime alone rejects a date-only string.
+    parsed = parse_datetime(raw) or parse_datetime(f"{raw}T00:00:00")
+    if parsed is None:
+        raise ValidationError(f"{param_name} is not a valid ISO date/datetime")
+    if timezone.is_naive(parsed):
+        parsed = timezone.make_aware(parsed)
+    return parsed
 
 
 class BroadcastListCreateView(APIView):
     def get(self, request):
         view = request.query_params.get("view")
+        from_date = _parse_date_param(request.query_params.get("from"), "from")
+        to_date = _parse_date_param(request.query_params.get("to"), "to")
         qs, include_has_acknowledged = BroadcastService.list_broadcasts(
-            request.user, request.tenant_id, view,
+            request.user, request.tenant_id, view, from_date=from_date, to_date=to_date,
         )
 
         paginator = BoloPageNumberPagination()
         page = paginator.paginate_queryset(qs, request, view=self)
+        if view == "sent":
+            page = BroadcastService.attach_audience_size(request.tenant_id, page)
         data = [
             serialize_broadcast_list_item(b, include_has_acknowledged=include_has_acknowledged)
             for b in page

@@ -72,7 +72,14 @@ def serialize_broadcast_list_item(broadcast, *, include_has_acknowledged: bool) 
         "status": broadcast.status,
         "expiresAt": broadcast.expires_at.isoformat() if broadcast.expires_at else None,
         "createdAt": broadcast.created_at.isoformat(),
+        "updatedAt": broadcast.updated_at.isoformat(),
     }
     if include_has_acknowledged:
         data["hasAcknowledged"] = bool(broadcast.has_acknowledged_annotated)
+    # Only present on view=sent rows, where BroadcastService.attach_audience_size
+    # was called on the page first -- a live count of members currently matching
+    # this row's audience scope (api-spec.md's GET /broadcast-notices?view=sent).
+    audience_size = getattr(broadcast, "audience_size_annotated", None)
+    if audience_size is not None:
+        data["audienceSize"] = audience_size
     return data

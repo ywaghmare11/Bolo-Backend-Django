@@ -1,3 +1,120 @@
-from django.shortcuts import render
+from rest_framework.throttling import ScopedRateThrottle
+from rest_framework.views import APIView
 
-# Create your views here.
+from apps.auth.serializers import RequestOtpSerializer, VerifyOtpSerializer
+from apps.common.permissions import AllowAny, IsAuthenticated
+from apps.common.responses import success_response
+from apps.platform_admin.authentication import PlatformAdminCookieJWTAuthentication
+from apps.platform_admin.serializers import (
+    AddMemberSerializer,
+    CreateTenantSerializer,
+    serialize_added_member,
+    serialize_tenant_created,
+    serialize_tenant_list_item,
+)
+from apps.platform_admin.services import PlatformAdminAuthService, PlatformAdminTenantService
+from apps.platform_admin.tokens import clear_admin_auth_cookie, set_admin_auth_cookie
+
+
+class PlatformAdminRequestOtpView(APIView):
+    permission_classes = [AllowAny]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "otp_request"
+
+    def post(self, request):
+        serializer = RequestOtpSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        email = serializer.validated_data["email"]
+
+        PlatformAdminAuthService.request_otp(email)
+        return success_response(None, f"OTP sent to {email}")
+
+
+class PlatformAdminVerifyOtpView(APIView):
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        serializer = VerifyOtpSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        result = PlatformAdminAuthService.verify_otp(
+            serializer.validated_data["email"], serializer.validated_data["otp"],
+        )
+        admin = result["admin"]
+
+        response = success_response(
+            {"adminId": str(admin.id), "name": admin.name, "email": admin.email},
+            "Login successful",
+        )
+        set_admin_auth_cookie(response, result["access_token"])
+        return response
+
+
+class PlatformAdminLogoutView(APIView):
+    """No server-side session state to revoke (single JWT, no refresh table) --
+    see apps/platform_admin/tokens.py. Clearing the cookie is the whole thing."""
+
+    authentication_classes = [PlatformAdminCookieJWTAuthentication]
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        response = success_response(None, "Logged out")
+        clear_admin_auth_cookie(response)
+        return response
+
+
+class PlatformAdminTenantListCreateView(APIView):
+    authentication_classes = [PlatformAdminCookieJWTAuthentication]
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        tenants = PlatformAdminTenantService.list_tenants()
+        return success_response([serialize_tenant_list_item(t) for t in tenants], "OK")
+
+    def post(self, request):
+        serializer = CreateTenantSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        d = serializer.validated_data
+
+        result = PlatformAdminTenantService.create_tenant(
+            tenant_name=d["tenantName"],
+            url_slug=d["urlSlug"],
+            vertical=d["vertical"],
+            admin_name=d["adminName"],
+            admin_email=d["adminEmail"],
+            admin_phone=d.get("adminPhone"),
+            role_label=d.get("roleLabel"),
+            preferred_lang=d.get("preferredLang", "EN"),
+        )
+        data = serialize_tenant_created(result["tenant"], result["admin_user"], result["role_label"])
+        return success_response(data, "Tenant registered", status=201)
+
+
+class PlatformAdminTenantMembersView(APIView):
+    authentication_classes = [PlatformAdminCookieJWTAuthentication]
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, tenant_id):
+        serializer = AddMemberSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        d = serializer.validated_data
+
+        user = PlatformAdminTenantService.add_member(
+            tenant_id,
+            name=d["name"],
+            email=d["email"],
+            role_level=d["roleLevel"],
+            role_label=d.get("roleLabel"),
+            department_id=d.get("departmentId"),
+            phone=d.get("phone"),
+        )
+        return success_response(serialize_added_member(user), "Member added", status=201)
+
+
+class PlatformAdminTenantMemberDetailView(APIView):
+    authentication_classes = [PlatformAdminCookieJWTAuthentication]
+    permission_classes = [IsAuthenticated]
+
+    def delete(self, request, tenant_id, user_id):
+        PlatformAdminTenantService.remove_member(tenant_id, user_id)
+        return success_response(None, "Member removed")

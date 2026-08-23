@@ -28,3 +28,13 @@ class UserRepository:
     def update_last_logout(user: User) -> None:
         user.last_logout_at = timezone.now()
         user.save(update_fields=["last_logout_at", "updated_at"])
+
+    @staticmethod
+    def email_exists(email: str) -> bool:
+        return User.objects.filter(email=email).exists()
+
+    @staticmethod
+    def create(tenant, name: str, email: str, phone: str | None = None, preferred_lang: str = "EN") -> User:
+        return User.objects.create(
+            tenant=tenant, name=name, email=email, phone=phone, preferred_lang=preferred_lang,
+        )

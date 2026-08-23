@@ -1,7 +1,7 @@
 # BOLO — Security Requirements & Controls
 
 > Applies to all environments. Treat this as a checklist — check off items as they are implemented.
-> **Last updated (bolo-backend-django sync 2026-08-22):** re-synced through upstream's 2026-07-15 state (PlatformAdmin/superadmin auth, W35 resolved — not yet built here). Previously (upstream 2026-06-20): audit log added to V1 (W63 resolved). Web PRD v1.1. **Web platform: no device GPS in V1.** Controls deferred: voice encryption (W44), DPDP (W62).
+> **Last updated (bolo-backend-django):** 2026-08-23 — Platform Admin (superadmin) auth core built (see below). Previously 2026-08-22: re-synced through upstream's 2026-07-15 state (PlatformAdmin/superadmin auth, W35 resolved). Previously (upstream 2026-06-20): audit log added to V1 (W63 resolved). Web PRD v1.1. **Web platform: no device GPS in V1.** Controls deferred: voice encryption (W44), DPDP (W62).
 
 ---
 
@@ -26,7 +26,7 @@
 - [x] On logout: both cookies cleared server-side (`Set-Cookie: token=; Max-Age=0` / `refresh_token=; Max-Age=0`); the current refresh token row is also revoked (bolo-backend-django). OTP row already deleted at verify time — nothing extra to clean up there.
 - [ ] On account removal: `TenantMembership` row deleted; an already-issued access token remains valid until it expires (max 15 min, bolo-backend-django) or the original Node backend's cookie expiry (7 days, unchanged there). Revoking all refresh tokens for the removed user (`RefreshTokenRepository.revoke_all_for_user`) on this path is not yet wired up — worth doing before this matters in practice.
 
-### Platform Admin (superadmin) auth — W35 resolved *(not yet built here — `apps/platform_admin` has the two models from the Phase 1 scaffold but no auth/views/services/repositories/urls; see CLAUDE.md)*
+### Platform Admin (superadmin) auth — W35 resolved *(core built here 2026-08-23 — OTP auth + create/list tenant + add/remove member. Deferred: Excel/JSON bulk-import, `AuditLog` wiring for these actions — see CLAUDE.md. One deliberate deviation: a single 7-day `admin_token` JWT with no refresh/rotation, simpler than the tenant-user access+refresh design below — PlatformAdmin is ops-only/low-volume, provisioned by a management command, not the main product's session model this project's refresh-token deviation was built for.)*
 
 > A `PlatformAdmin` is a cross-tenant actor, entirely outside `Tenant`/RLS scoping — not a `User`, not a `TenantMembership` role. Registers new tenants and can add/remove users in any tenant. Full design in `docs/architecture/domain-model.md` ("PlatformAdmin" section) and `docs/api/api-spec.md` §22 (this project's numbering — §20 upstream).
 

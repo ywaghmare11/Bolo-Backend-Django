@@ -11,6 +11,12 @@ class PlatformAdmin(TimestampedModel):
     name = models.CharField(max_length=255)
     email = models.EmailField(unique=True)
 
+    # Not Django's contrib.auth model, same shim as users.User -- these two
+    # attributes are the minimal interface DRF's IsAuthenticated permission
+    # and auth internals expect on request.user.
+    is_authenticated = True
+    is_anonymous = False
+
     class Meta:
         db_table = "platform_admins"
 

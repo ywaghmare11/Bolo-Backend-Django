@@ -1,3 +1,5 @@
+import io
+
 import pytest
 from rest_framework.test import APIClient
 
@@ -35,15 +37,11 @@ def outsider(tenant):
 
 @pytest.fixture(autouse=True)
 def mock_storage(monkeypatch):
-    calls = {"copied": [], "deleted": [], "put_presigned": 0, "get_presigned": 0}
+    calls = {"copied": [], "deleted": [], "put_presigned": 0, "streamed": []}
 
     def fake_presign_put(key, content_type, expires_in):
         calls["put_presigned"] += 1
         return f"https://s3.ap-south-1.amazonaws.com/bolo-voice/{key}?X-Amz-Signature=fake"
-
-    def fake_presign_get(key, expires_in):
-        calls["get_presigned"] += 1
-        return f"https://s3.ap-south-1.amazonaws.com/bolo-voice/{key}?X-Amz-Signature=fake-get"
 
     def fake_copy(source_key, dest_key):
         calls["copied"].append((source_key, dest_key))
@@ -51,10 +49,14 @@ def mock_storage(monkeypatch):
     def fake_delete(key):
         calls["deleted"].append(key)
 
+    def fake_get_object_stream(key):
+        calls["streamed"].append(key)
+        return io.BytesIO(b"fake audio bytes"), "audio/webm"
+
     monkeypatch.setattr("apps.common.storage.generate_presigned_put_url", fake_presign_put)
-    monkeypatch.setattr("apps.common.storage.generate_presigned_get_url", fake_presign_get)
     monkeypatch.setattr("apps.common.storage.copy_object", fake_copy)
     monkeypatch.setattr("apps.common.storage.delete_object", fake_delete)
+    monkeypatch.setattr("apps.common.storage.get_object_stream", fake_get_object_stream)
     return calls
 
 
@@ -178,19 +180,30 @@ class TestVoiceAudioConfirmAndPlayback:
         )
         assert resp.status_code == 400
 
-    def test_playback_url_before_confirm_is_404(self, tenant, assigner, assignee):
+    def test_audio_before_confirm_is_404(self, tenant, assigner, assignee):
         client, task_id, _ = self._create_and_presign(tenant, assigner, assignee)
         resp = client.get(f"/api/v1/tasks/{task_id}/voice-recording/audio/")
         assert resp.status_code == 404
 
-    def test_playback_url_after_confirm(self, tenant, assigner, assignee, mock_storage):
+    def test_audio_streams_bytes_after_confirm(self, tenant, assigner, assignee, mock_storage):
         client, task_id, s3_key = self._create_and_presign(tenant, assigner, assignee)
         client.patch(f"/api/v1/tasks/{task_id}/voice-recording/audio/", {"s3Key": s3_key}, format="json")
 
         resp = client.get(f"/api/v1/tasks/{task_id}/voice-recording/audio/")
         assert resp.status_code == 200
-        assert resp.data["data"]["playbackUrl"].startswith("https://")
-        assert mock_storage["get_presigned"] == 1
+        assert resp["Content-Type"] == "audio/webm"
+        assert b"".join(resp.streaming_content) == b"fake audio bytes"
+
+    def test_audio_re_checks_access_on_every_request(self, tenant, assigner, assignee, outsider, mock_storage):
+        """Never a pre-signed URL -- a non-participant is rejected fresh on this
+        request, not just when the (nonexistent) URL was originally minted."""
+        client, task_id, s3_key = self._create_and_presign(tenant, assigner, assignee)
+        client.patch(f"/api/v1/tasks/{task_id}/voice-recording/audio/", {"s3Key": s3_key}, format="json")
+
+        outsider_client = _authed_client(outsider, tenant.id)
+        resp = outsider_client.get(f"/api/v1/tasks/{task_id}/voice-recording/audio/")
+        assert resp.status_code == 403
+        assert mock_storage["streamed"] == []
 
 
 @pytest.mark.django_db

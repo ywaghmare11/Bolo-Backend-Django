@@ -888,7 +888,7 @@ Response 200:
 
 ### GET /tasks/:id/voice-recording/audio — stream audio playback
 
-**Changed (bolo-backend-django sync 2026-08-22, upstream changed 2026-07-25) — this endpoint used to return `{ playbackUrl, expiresIn }`, a pre-signed S3 GET URL. This project's code still returns that shape (`VoiceRecordingService.get_playback_url`) — needs updating to match.** Only callable if `hasAudio: true`. Streams the S3 object server-side with `Content-Type` from the stored object metadata — a pre-signed URL's signature is its entire authorization, so returning one in JSON made it a copyable credential valid for anyone for its full TTL, session or not; this endpoint re-checks assigner/assignee on every request instead. Point an `<audio>` tag's `src` directly at this URL — cookies attach automatically for same-origin requests. Same pattern as Evidence (§5) and Broadcast image (§10).
+**Changed (built here 2026-08-23, matching upstream's 2026-07-25 change) — this endpoint used to return `{ playbackUrl, expiresIn }`, a pre-signed S3 GET URL.** Only callable if `hasAudio: true`. Streams the S3 object server-side (`VoiceRecordingService.get_audio_stream`) with `Content-Type` from the stored object metadata — a pre-signed URL's signature is its entire authorization, so returning one in JSON made it a copyable credential valid for anyone for its full TTL, session or not; this endpoint re-checks assigner/assignee on every request instead. Point an `<audio>` tag's `src` directly at this URL — cookies attach automatically for same-origin requests. Same pattern as Evidence (§5) and Broadcast image (§10).
 
 ```
 Response 200: audio/webm bytes (or the object's stored Content-Type)

@@ -69,11 +69,16 @@ class VoiceRecordingService:
         return VoiceRecordingRepository.get_by_task_id(task_id, tenant_id)
 
     @staticmethod
-    def get_playback_url(user, tenant_id, task_id):
+    def get_audio_stream(user, tenant_id, task_id):
+        """Streams the object server-side instead of minting a pre-signed URL --
+        a pre-signed URL's signature is its entire authorization, so returning
+        one in JSON makes it a copyable credential valid for anyone for its
+        full TTL, session or not. Re-checks assigner/assignee access on every
+        request instead. Same pattern as Evidence/Broadcast image."""
         _get_accessible_task(tenant_id, task_id, user)
         voice_recording = VoiceRecordingRepository.get_by_task_id(task_id, tenant_id)
         if not voice_recording.audio_url:
             raise NotFoundError("Audio", task_id)
 
-        url = storage.generate_presigned_get_url(voice_recording.audio_url, PRESIGN_EXPIRES_IN_SECONDS)
-        return {"playbackUrl": url, "expiresIn": PRESIGN_EXPIRES_IN_SECONDS}
+        body, content_type = storage.get_object_stream(voice_recording.audio_url)
+        return body, content_type or "audio/webm"

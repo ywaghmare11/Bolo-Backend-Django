@@ -5,6 +5,14 @@
 
 ---
 
+## 2026-08-23 (2)
+
+- `[BE]` **Voice recording playback: streaming, not pre-signed URL** (`apps/tasks`) — closes the smallest of the four remaining contract gaps from the 2026-08-22 docs re-sync. `GET /tasks/:id/voice-recording/audio` used to return `{ playbackUrl, expiresIn }`, a pre-signed S3 GET URL with a 15-min TTL — a copyable credential the moment it's in a JSON response, valid for anyone who has it regardless of session state. Now streams the object server-side (`VoiceRecordingService.get_audio_stream`, mirrors `EvidenceService.get_evidence_file`'s exact shape) and re-checks assigner/assignee access on every request. Third and final of the four file-serving endpoints (Evidence, Broadcast image, Voice recording, Profile picture — the last one still unbuilt) to move to this pattern.
+  - `docs/api/api-spec.md` and `docs/ops/security.md` updated — both had carried "still returns the old shape, needs updating" notes from the sync; now say what's actually true.
+  - 1 net new test (renamed 2 existing ones for clarity: `test_playback_url_before_confirm_is_404` → `test_audio_before_confirm_is_404`, `test_playback_url_after_confirm` → `test_audio_streams_bytes_after_confirm`, updated to assert on `resp.streaming_content` instead of a JSON `playbackUrl` field) plus a new `test_audio_re_checks_access_on_every_request` covering the actual security property the streaming change is for — a non-participant is rejected on this request, not just historically unable to have obtained a URL. 243 tests total, all green; `ruff check` clean.
+
+---
+
 ## 2026-08-23
 
 - `[BE]` `[INFRA]` **`Tenant.url_slug` + API trailing-slash fix + local dev infra.**

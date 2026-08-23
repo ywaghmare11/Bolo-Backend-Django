@@ -1,3 +1,4 @@
+from django.http import StreamingHttpResponse
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
@@ -201,8 +202,10 @@ class VoiceRecordingDetailView(APIView):
 
 class VoiceRecordingAudioView(APIView):
     def get(self, request, task_id):
-        data = VoiceRecordingService.get_playback_url(request.user, request.tenant_id, task_id)
-        return success_response(data, "OK")
+        body, content_type = VoiceRecordingService.get_audio_stream(
+            request.user, request.tenant_id, task_id,
+        )
+        return StreamingHttpResponse(body, content_type=content_type)
 
     def patch(self, request, task_id):
         serializer = VoiceAudioConfirmSerializer(data=request.data)

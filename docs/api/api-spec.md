@@ -203,11 +203,11 @@ GET /api/v1/tasks?view=assigned&status=all&page=1&limit=20
 - `assigned` — `assigneeId = me`; excludes `DRAFT`, `DONE_D`, `CANCELLED`, `isArchived=true`; sort: `OVERDUE` first → `dueDate ASC` → `createdAt DESC`
 - `delegated` — `assignerId = me`; excludes `DONE_D`, `isArchived=true`; same sort
 - `needs_attention` — tasks where action is required: `OPEN` (not yet accepted) + `OVERDUE` + `DONE_A` (awaiting assigner mark); scoped to me as assignee or assigner
-- `open` *(bolo-backend-django sync 2026-08-22, not yet built — see CLAUDE.md)* — `status = OPEN`; scoped to me as assignee or assigner
-- `overdue` *(not yet built)* — `status = OVERDUE`; scoped to me as assignee or assigner
-- `done_a` *(not yet built)* — `status = DONE_A`; scoped to me as assignee or assigner
-- `by_label` *(not yet built)* — requires `labelId`; main-label tasks (as assigner, or as assignee without a personal label override) + personal-label tasks (as assignee), scoped to me
-- `due_this_week` *(not yet built)* — `dueDate` falls within the current Monday–Sunday calendar week (server-local day boundaries); excludes `DRAFT`, `DONE_D`, `CANCELLED`; scoped to me as assignee or assigner
+- `open` — `status = OPEN`; scoped to me as assignee or assigner
+- `overdue` — `status = OVERDUE`; scoped to me as assignee or assigner
+- `done_a` — `status = DONE_A`; scoped to me as assignee or assigner
+- `by_label` — requires `labelId`; main-label tasks (as assigner, or as assignee without a personal label override) + personal-label tasks (as assignee), scoped to me
+- `due_this_week` — `dueDate` falls within the current Monday–Sunday calendar week (server-local day boundaries, `TaskRepository._current_week_range`); excludes `DRAFT`, `DONE_D`, `CANCELLED`; scoped to me as assignee or assigner
 
 **Access:** `requireAuth` — scoped to `tenantId` from JWT.
 
@@ -261,7 +261,7 @@ Response 200:
 GET /api/v1/tasks/counts
 ```
 
-Returns the count of tasks in each task-tab view (`assigned`, `delegated`, `needs_attention`, `open`, `overdue`, `done_a`/`doneA`, `due_this_week`/`dueThisWeek`) for the calling user — used for sidebar/tab badge counts. Cheap COUNT query — no pagination, no body params. Uses the same filter logic as `GET /tasks?view=...` (see above), scoped to `tenantId` from JWT. `by_label` has no count here since it requires a `labelId`. **The `open`/`overdue`/`doneA`/`dueThisWeek` counts are bolo-backend-django sync 2026-08-22 additions, not yet built here** — see CLAUDE.md.
+Returns the count of tasks in each task-tab view (`assigned`, `delegated`, `needs_attention`, `open`, `overdue`, `done_a`/`doneA`, `due_this_week`/`dueThisWeek`) for the calling user — used for sidebar/tab badge counts. Cheap COUNT query — no pagination, no body params. Uses the same filter logic as `GET /tasks?view=...` (see above), scoped to `tenantId` from JWT. `by_label` has no count here since it requires a `labelId`.
 
 **Access:** `requireAuth` — scoped to `tenantId` + `userId` from JWT.
 
@@ -2533,7 +2533,7 @@ Writes a single `AuditLog` row per call: `action: MEMBERS_BULK_IMPORTED`, `actor
 | Route | Auth | Role guard | Ownership check |
 |---|---|---|---|
 | POST /auth/\* | none | none | none |
-| GET /tasks?view=open\|overdue\|done_a\|by_label\|due_this_week | requireAuth | none | tenantId scope; not yet built here |
+| GET /tasks?view=open\|overdue\|done_a\|by_label\|due_this_week | requireAuth | none | tenantId scope |
 | GET /tasks | requireAuth | none | tenantId scope |
 | GET /tasks/counts | requireAuth | none | service: userId + tenantId = me |
 | POST /tasks | requireAuth | none | caller becomes assigner |

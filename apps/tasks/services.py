@@ -376,8 +376,23 @@ class TaskService:
             qs = TaskRepository.list_delegated(user, tenant_id, label_id, is_archived)
         elif view == "needs_attention":
             qs = TaskRepository.list_needs_attention(user, tenant_id, label_id)
+        elif view == "open":
+            qs = TaskRepository.list_by_status(user, tenant_id, TaskStatus.OPEN, label_id)
+        elif view == "overdue":
+            qs = TaskRepository.list_by_status(user, tenant_id, TaskStatus.OVERDUE, label_id)
+        elif view == "done_a":
+            qs = TaskRepository.list_by_status(user, tenant_id, TaskStatus.DONE_A, label_id)
+        elif view == "by_label":
+            if not label_id:
+                raise ValidationError("labelId is required for view=by_label")
+            qs = TaskRepository.list_by_label(user, tenant_id, label_id)
+        elif view == "due_this_week":
+            qs = TaskRepository.list_due_this_week(user, tenant_id, label_id)
         else:
-            raise ValidationError("Invalid view -- must be assigned, delegated, or needs_attention")
+            raise ValidationError(
+                "Invalid view -- must be assigned, delegated, needs_attention, open, "
+                "overdue, done_a, by_label, or due_this_week",
+            )
         return qs
 
     @staticmethod

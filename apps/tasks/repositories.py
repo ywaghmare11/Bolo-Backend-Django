@@ -1,5 +1,8 @@
+from datetime import timedelta
+
 from django.db import transaction
 from django.db.models import Case, Count, F, Q, When
+from django.utils import timezone
 
 from apps.comments.models import Comment
 from apps.common.enums import TaskStatus
@@ -11,6 +14,15 @@ SORT_ORDER = (
     F("due_date").asc(nulls_last=True),
     "-created_at",
 )
+
+
+def _current_week_range():
+    """Monday-Sunday, server-local day boundaries (matches api-spec.md's
+    due_this_week semantics)."""
+    today = timezone.localdate()
+    start = today - timedelta(days=today.weekday())
+    end = start + timedelta(days=6)
+    return start, end
 
 
 class TaskRepository:
@@ -107,6 +119,43 @@ class TaskRepository:
         return qs.order_by(*SORT_ORDER)
 
     @staticmethod
+    def list_by_status(user, tenant_id, status, label_id=None):
+        """Backs the open/overdue/done_a views -- a single status, scoped to
+        me as assignee or assigner, same shape as list_needs_attention with
+        one status instead of three."""
+        qs = TaskRepository._annotated_queryset(tenant_id).filter(
+            Q(assignee=user) | Q(assigner=user), status=status,
+        )
+        if label_id:
+            qs = qs.filter(main_label_id=label_id)
+        return qs.order_by(*SORT_ORDER)
+
+    @staticmethod
+    def list_by_label(user, tenant_id, label_id):
+        """main-label tasks (as assigner, or as assignee without a personal
+        label override) + personal-label tasks (as assignee) -- api-spec.md's
+        by_label semantics, distinct from the simple main_label_id filter the
+        other views use."""
+        qs = TaskRepository._annotated_queryset(tenant_id).filter(
+            Q(assigner=user, main_label_id=label_id)
+            | Q(assignee=user, main_label_id=label_id, assignee_label_id__isnull=True)
+            | Q(assignee=user, assignee_label_id=label_id),
+        )
+        return qs.order_by(*SORT_ORDER)
+
+    @staticmethod
+    def list_due_this_week(user, tenant_id, label_id=None):
+        start, end = _current_week_range()
+        qs = (
+            TaskRepository._annotated_queryset(tenant_id)
+            .filter(Q(assignee=user) | Q(assigner=user), due_date__date__gte=start, due_date__date__lte=end)
+            .exclude(status__in=[TaskStatus.DRAFT, TaskStatus.DONE_D, TaskStatus.CANCELLED])
+        )
+        if label_id:
+            qs = qs.filter(main_label_id=label_id)
+        return qs.order_by(*SORT_ORDER)
+
+    @staticmethod
     def attach_latest_comments(tasks):
         """One extra DISTINCT ON query for the whole list, not N+1."""
         task_list = list(tasks)
@@ -137,7 +186,25 @@ class TaskRepository:
             Q(assignee=user) | Q(assigner=user),
             status__in=[TaskStatus.OPEN, TaskStatus.OVERDUE, TaskStatus.DONE_A],
         ).count()
-        return {"assigned": assigned, "delegated": delegated, "needsAttention": needs_attention}
+        mine = Q(assignee=user) | Q(assigner=user)
+        open_count = base.filter(mine, status=TaskStatus.OPEN).count()
+        overdue_count = base.filter(mine, status=TaskStatus.OVERDUE).count()
+        done_a_count = base.filter(mine, status=TaskStatus.DONE_A).count()
+        start, end = _current_week_range()
+        due_this_week_count = (
+            base.filter(mine, due_date__date__gte=start, due_date__date__lte=end)
+            .exclude(status__in=[TaskStatus.DRAFT, TaskStatus.DONE_D, TaskStatus.CANCELLED])
+            .count()
+        )
+        return {
+            "assigned": assigned,
+            "delegated": delegated,
+            "needsAttention": needs_attention,
+            "open": open_count,
+            "overdue": overdue_count,
+            "doneA": done_a_count,
+            "dueThisWeek": due_this_week_count,
+        }
 
     @staticmethod
     def subtask_count(task: Task) -> int:

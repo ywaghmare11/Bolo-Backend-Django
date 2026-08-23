@@ -5,6 +5,16 @@
 
 ---
 
+## 2026-08-23
+
+- `[BE]` `[INFRA]` **`Tenant.url_slug` + API trailing-slash fix + local dev infra.**
+  - `Tenant.url_slug` (nullable, unique, migration `0003_tenant_url_slug`) — partial build of the `Tenant.urlSlug` gap flagged in the 2026-08-22 docs re-sync. Wired into `POST /auth/verify-otp`'s `tenantSlug` response field. Left **nullable** rather than required (unlike upstream) since the real assignment path is `POST /platform-admin/tenants`, which isn't built — see `docs/api/api-spec.md` §22, `docs/architecture/domain-model.md`'s Tenant table.
+  - `[INFRA]` New `apps/common/middleware.py:NormalizeApiTrailingSlashMiddleware` — `api-spec.md` documents every endpoint without a trailing slash, but Django's `urls.py` patterns need one for `reverse()` to work. `CommonMiddleware`'s `APPEND_SLASH` only redirects `GET` and 500s on `POST`/`PATCH`/`DELETE` (can't replay a request body across a redirect), so incoming `/api/*` paths are normalized before URL resolution instead — a real contract-compliance fix, not cosmetic, since it's what lets `bolo-web` actually call this backend without every mutating request needing a trailing slash it was never coded to send.
+  - `[INFRA]` Local-dev-only SMTP email backend settings (`EMAIL_HOST`/`PORT`/etc., `config/settings/base.py`) and `django-cors-headers` (`config/settings/dev.py` only) — lets `bolo-web` (vite, `localhost:5173`) call this backend directly at `localhost:8000` and receive real OTP mail while testing. Neither touches `base.py`'s prod defaults or `prod.py`.
+  - 242 tests still green (no new tests — infra/config only), `ruff check` clean, `makemigrations --check` confirms no further un-generated model drift.
+
+---
+
 ## 2026-08-22 (2)
 
 - `[BE]` **General Notification panel** (`apps/notifications`) — `GET /notifications`, `PATCH /notifications/:id/read`, `POST /notifications/mark-all-read`, `GET /notifications/unread-count` per `docs/api/api-spec.md` §11. Not a new gap from today's docs sync — these endpoints have been documented since the Phase 1 model port and simply never had views/urls built on top; only the AI-Nudge-specific `/nudges` feed existed until now.

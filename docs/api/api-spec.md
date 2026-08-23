@@ -160,7 +160,7 @@ Response 200:
 Set-Cookie: token=<jwt>; HttpOnly; SameSite=Strict; Path=/; (no Max-Age — session cookie)
 ```
 
-**`tenantSlug`** (bolo-backend-django sync 2026-08-22, upstream added 2026-08-09; `Tenant.urlSlug` not yet a field in this project — see CLAUDE.md) — the tenant's `urlSlug`. Upstream's `bolo-web` uses it + a slugified first name to build a post-login URL path. Purely cosmetic/frontend routing — never an authorization signal; irrelevant to this backend beyond returning the field once `urlSlug` exists.
+**`tenantSlug`** (upstream added 2026-08-09; `Tenant.url_slug` built here 2026-08-22, migration `0003`) — the tenant's `urlSlug`. Upstream's `bolo-web` uses it + a slugified first name to build a post-login URL path. Purely cosmetic/frontend routing — never an authorization signal. **Nullable in this project** (unlike upstream's required field) — the real assignment path is `POST /platform-admin/tenants`, not built here yet (see CLAUDE.md), so existing/newly-created tenants can have `url_slug = null` until that lands; `tenantSlug` in this response is `null` in that case.
 
 **Errors:** 400 `INVALID_OTP` (includes `data.attemptsRemaining`) · 400 `OTP_EXPIRED` · 429 `RATE_LIMITED` (locked 15 min, `data.attemptsRemaining: 0`)
 
@@ -2464,7 +2464,7 @@ Response 201:
 }
 ```
 
-**`urlSlug`** — required, `^[a-z0-9]+(-[a-z0-9]+)*$`, 2-40 chars. **Rejected, not auto-transformed** if malformed. Must be unique across all tenants. Requires `Tenant.urlSlug` to exist as a field first (not yet built here).
+**`urlSlug`** — required, `^[a-z0-9]+(-[a-z0-9]+)*$`, 2-40 chars. **Rejected, not auto-transformed** if malformed. Must be unique across all tenants. `Tenant.url_slug` exists as a field here (built 2026-08-22, migration `0003`) — this endpoint itself (the assignment path) is still not built, see the PlatformAdmin section above.
 
 Writes an `AuditLog` row: `action: TENANT_CREATED`, `actorType: PLATFORM_ADMIN`, `entityType: "Tenant"`.
 

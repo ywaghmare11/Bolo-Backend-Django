@@ -82,7 +82,7 @@ BroadcastNotice → sent to (Dept + RoleLevel) group
 |---|---|---|---|
 | id | UUID | ✅ | |
 | name | string | ✅ | e.g., "ABC College", "Sharma & Associates" |
-| urlSlug | string | ✅ | Unique. Client-chosen at tenant creation (`POST /platform-admin/tenants`), URL-safe (`^[a-z0-9]+(-[a-z0-9]+)*$`, 2-40 chars) — drives the post-login URL path `/{urlSlug}/{firstName}` (system-design.md §4.3). **Cosmetic only** — never used for tenant scoping/authorization, which stays keyed on `id` from the JWT everywhere else. Added 2026-08-09. |
+| urlSlug | string | ✅ upstream / — here | Unique. Client-chosen at tenant creation (`POST /platform-admin/tenants`), URL-safe (`^[a-z0-9]+(-[a-z0-9]+)*$`, 2-40 chars) — drives the post-login URL path `/{urlSlug}/{firstName}` (system-design.md §4.3). **Cosmetic only** — never used for tenant scoping/authorization, which stays keyed on `id` from the JWT everywhere else. Added 2026-08-09 upstream. **Built here 2026-08-22** (`Tenant.url_slug`, migration `0003`) as **nullable**, not required — the assignment endpoint (`POST /platform-admin/tenants`) isn't built yet, so there's no path to populate it on tenant creation; wired into `POST /auth/verify-otp`'s `tenantSlug` response field regardless, returning `null` until PlatformAdmin lands. |
 | vertical | enum | ✅ | `EDUCATION` \| `CA_CS` |
 | createdAt | timestamp | ✅ | |
 | updatedAt | timestamp | ✅ | |

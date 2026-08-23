@@ -5,6 +5,19 @@
 
 ---
 
+## 2026-08-23 (7)
+
+- `[BE]` **Profile picture: `GET`/`PATCH /me`, presign/confirm/delete, streamed cross-member access** (`apps/users`) — closes the last and biggest of the four remaining contract gaps from the 2026-08-22 docs re-sync. `apps/users` had no `views.py`/`urls.py` content at all before this — Phase 1 scaffolded only the model.
+  - `GET /me` — full profile (name/email/phone/profilePicUrl/tenant/role/department/reportsTo/canBroadcast), sourced from `MembershipRepository.get_profile_for_user` (extended to `select_related` `department`/`reports_to` too, alongside the existing `tenant`, so this stays a single query). `PATCH /me` — name/preferredLang only, matching the documented "user can only update their own name and preferred language" rule.
+  - Profile picture upload: same presign → confirm two-step as Evidence/Broadcast image, single object per user (a re-upload overwrites the same confirmed S3 key) — `apps/users/services.py:ProfilePictureService`. Retrieval built streaming from day one (`get_object_stream`, never `generate_presigned_get_url`), matching the pattern Evidence/Broadcast image/Voice recording already established, rather than building the old pre-signed-URL version first and converting later.
+  - New `GET /users/:userId/profile-picture` (metadata) + `GET /users/:userId/profile-picture/file` (streamed bytes) — any tenant member can look up any other member's picture (task cards, comments, org chart), tenant-scoped only (404 if `userId` belongs to a different tenant), no further per-viewer restriction since profile pictures are already visible tenant-wide.
+  - New `UserRepository.update`/`get_by_id_in_tenant` methods — kept ORM access in the model-owning repository rather than touching `User.objects` from the service layer.
+  - **Explicitly not built, flagged not silently dropped:** `GET /tenant/members` (the endpoint that would actually surface `profilePicUrl`/`joinedAt` in a member list) and tenant self-service member CRUD generally (`GET /tenant/roles`, invite, remove) — a separate, larger gap this project has never had any of; this slice only covers the profile-picture endpoints themselves.
+  - Six stale "not yet built" doc markers (`api-spec.md`, `security.md`) updated in place.
+  - 14 new tests (278 total, all green) in a new `test_profile.py`: `GET`/`PATCH /me` shape and partial updates, presign success/oversized/wrong-content-type rejections, confirm sets the picture and returns the streaming path, re-upload overwrites the same key, delete removes it (and 404s when nothing's set), cross-member metadata + streamed file access, tenant-scoping 404. `ruff check` clean, `python manage.py check` clean (new URL wiring).
+
+---
+
 ## 2026-08-23 (6)
 
 - `[BE]` **Task list view filters + counts: `open`/`overdue`/`done_a`/`by_label`/`due_this_week`** (`apps/tasks`) — closes the third of the four remaining contract gaps from the 2026-08-22 docs re-sync.

@@ -1830,7 +1830,7 @@ Response 404: { "error": "No profile picture set" }
 
 ---
 
-### GET /users/:userId/profile-picture — get any tenant member's profile picture by ID *(bolo-backend-django sync 2026-08-22, not yet built — see CLAUDE.md)*
+### GET /users/:userId/profile-picture — get any tenant member's profile picture by ID
 
 **Access:** `requireAuth` — any tenant member (e.g. task cards, comments, org chart, where only a `userId` is known). `userId` must belong to the caller's tenant — 404 if not.
 
@@ -1841,7 +1841,7 @@ Response 404: { "error": "User not found: uuid" }
 
 ---
 
-### GET /users/:userId/profile-picture/file — fetch the profile picture content *(bolo-backend-django sync 2026-08-22, not yet built — see CLAUDE.md)*
+### GET /users/:userId/profile-picture/file — fetch the profile picture content
 
 **Access:** `requireAuth`, tenant-scoped only — no further per-viewer restriction, since profile pictures are already visible tenant-wide in member lists, task cards, comments, and the org chart. Streams the S3 object server-side, `Content-Type` from the stored object metadata — **never a pre-signed URL**, same pattern as Evidence/Broadcast image (§5, §10). `getPresignedGetUrl`-style URL generation should have no remaining callers anywhere once this ships.
 
@@ -1898,7 +1898,7 @@ Response 200:
 }
 ```
 
-**`profilePicUrl`/`joinedAt`** (bolo-backend-django sync 2026-08-22, not yet built): `profilePicUrl` is the streaming path from `GET /users/:userId/profile-picture/file` above, or `null`. `joinedAt` is the member's `TenantMembership.createdAt`.
+**`profilePicUrl`/`joinedAt`**: `profilePicUrl` is the streaming path from `GET /users/:userId/profile-picture/file` above, or `null`. `joinedAt` is the member's `TenantMembership.createdAt`. **Note:** this specific endpoint, `GET /tenant/members`, is not built here — only the profile-picture endpoints it would reference are; see CLAUDE.md. There is also no tenant self-service member CRUD in this project at all (`GET /tenant/members`, `GET /tenant/roles`, invite/remove) — a separate, larger gap from profile picture, out of scope for that slice.
 
 ---
 
@@ -2573,6 +2573,7 @@ Writes a single `AuditLog` row per call: `action: MEMBERS_BULK_IMPORTED`, `actor
 | POST /voice/dispatch | requireAuth | none | service: same as target endpoint |
 | GET /me, PATCH /me | requireAuth | none | JWT userId |
 | POST /upload/profile-picture-presign, PATCH/DELETE /me/profile-picture | requireAuth | none | JWT userId; always targets caller's own picture |
+| GET /users/:userId/profile-picture | requireAuth | none | any tenant member; 404 if userId belongs to a different tenant |
 | GET /users/:userId/profile-picture/file | requireAuth | none | any tenant member (backend-streamed, not pre-signed URL) |
 | GET /tenant | requireAuth | requireOrgRole(['TOP']) | tenantId from JWT |
 | GET /tenant/members | requireAuth | none | tenantId from JWT |

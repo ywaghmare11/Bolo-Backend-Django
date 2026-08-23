@@ -28,3 +28,7 @@ bleach==6.4.0
 # documented AI-unavailable fallback path here -- same "no real credentials, mock/skip
 # the external call" situation as boto3/S3 in apps/evidence and apps/broadcasts.
 openai==1.109.1
+# CORS for local cross-origin dev only -- bolo-web (vite, localhost:5173) calling this
+# API directly (localhost:8000) instead of through a same-origin nginx proxy like prod.
+# Only enabled in config/settings/dev.py, never base.py/prod.py.
+django-cors-headers==4.9.0

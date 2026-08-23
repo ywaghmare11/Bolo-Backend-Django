@@ -21,6 +21,141 @@ The PRD reflects the current state; this file explains how we got there.
 
 ## Log
 
+### 2026-08-18 — W113 resolved: AI Nudge fast-track moved off `lastLoginAt` onto `lastActiveAt`
+
+**Changed:** The first-login-of-the-day fast-track (W112, 2026-07-16) read `User.lastLoginAt` to decide who gets their first nudge fast-tracked. Replaced with a new `User.lastActiveAt` field, touched (throttled to once per 10 min) on any authenticated request via `requireAuth`, not tied to login/logout events.
+**Reason:** BOLO ships as a PWA with a 7-day session cookie — a user who logs in once and keeps using the installed app never triggers another real "login," so `lastLoginAt` went stale after day one and silently disabled the fast-track for every day after the first, with no error or visible symptom, just quietly-late nudges. Caught directly by the user during testing, not by an automated test.
+**Decided by:** Engineering fix; a frontend heartbeat-endpoint alternative was considered and rejected as unnecessary precision for what the fast-track needs (coarse "active today, yes/no") at the cost of frontend changes across both repos for no behavioral gain.
+**Impact:** `domain-model.md` (User table), `system-design.md` §2.5, `api-spec.md` §11, `open-questions-web-v1.md` (W113 resolved). `lastLoginAt` itself is unchanged and keeps its original login-event/audit purpose.
+
+---
+
+### 2026-08-09 — Post-login URL now reflects tenant + user (client requirement)
+
+**Changed:** Added `Tenant.urlSlug` (unique, client-chosen at tenant creation via `POST /platform-admin/tenants`, rejected — not auto-transformed — if malformed). `POST /auth/verify-otp` now returns `tenantSlug` alongside `tenantName`. `bolo-web`'s `ROUTES.APP` changed from the literal `/` to `/:tenantSlug/:userSlug`, navigated to immediately after OTP verification.
+**Reason:** Client wanted the address bar to reflect who's logged in (`/{tenant}/{firstName}/`), set dynamically at the earliest point the tenant/user is actually known, replacing the old fixed build-time `/integrate18/varun/` prefix.
+**Decided by:** Client — explicit **hard cutover, no legacy redirect** (acceptable since staging is still in active testing, not production; any existing bookmark/installed PWA shortcut under the old prefix 404s and must be re-added).
+**Impact:** `domain-model.md` (Tenant.urlSlug), `api-spec.md` (`verify-otp` response, new `POST /platform-admin/tenants`), `system-design.md` §4.3. **Explicitly cosmetic, never an authorization boundary** — every API call stays scoped by `tenantId` from the JWT cookie; `PrivateRoute` validates the URL's params against the real session on every render and silently corrects any mismatch. Also required an nginx + deploy-pipeline restructure (`docs/ops/staging-runbook.md` entry 5a) and surfaced two live staging migration incidents fixed the same day (entry 5b) — infra-only, no further product impact.
+
+---
+
+### 2026-07-30 — W114 logged: unified intent + jargon module deferred
+
+**Changed:** Logged, not built, a proposal for a shared intent-classification + jargon-glossary module reused by both the voice-command flow (`voice/intent.js`) and Global Search (`search/searchClassify.ts`).
+**Reason:** Root-causing a Global Search bug (acronym "NAAC" not resolving) surfaced that `voice/intent.js`'s jargon glossary is CS/MCA-vertical only, with no Education-vertical (Dean/HoD/Faculty) terms — and `searchClassify.ts` is deliberately standalone from `intent.js` per earlier explicit instruction, so the two modules can't share even the parts that would generalize across verticals.
+**Decided by:** User — "we need a separate thing for a intent and jargons, we can look into it later." Explicitly deferred, not scheduled.
+**Impact:** `open-questions-web-v1.md` (W114 added, open). No code change. The immediate NAAC bug itself was fixed separately via `searchClassify.ts`'s own fuzzy-matching layer, not this deferred module.
+
+---
+
+### 2026-07-30 — Broadcast Notice: editing a published notice's audience now notifies newly-added recipients
+
+**Changed:** Adding a department or role level to an already-published broadcast's audience now sends a `BROADCAST_POSTED` notification to the newly-included members only. Previously, editing a live notice's audience never notified anyone — new recipients only found out by noticing it appear in the RightPanel widget on its own periodic refresh, with no bell/notification-panel entry at all. Members who already matched before the edit are not re-notified; members removed by the edit get no notification either (matches "no notification on removal" as the correct behavior, not a gap).
+**Reason:** Found during manual regression testing of the new multi-role-level targeting (see the entry below) — reported as a real product gap, not just a code bug: a sender adding someone new to a live broadcast's audience reasonably expects that person to be notified the way the original audience was at publish time.
+**Decided by:** User request this session, after a scoped feasibility/edge-case review (no schema change required; reuses the existing `BROADCAST_POSTED` type via a before/after audience-membership diff).
+**Impact:** `docs/api/api-spec.md` §10 (`PATCH /broadcast-notices/:id`).
+
+---
+
+### 2026-07-30 — Broadcast Notice: role level audience scope becomes multi-select; image attachment shown in a framed preview
+
+**Changed:**
+- Recipients → Role Level is now a multi-select (checkboxes) — a sender can target several role levels at once (e.g. HoD + Faculty only), not just a single role level. Completes the same change Departments already got on 2026-07-17 below; Role Level was the one left single-select at the time.
+- Schema: `BroadcastNotice.audienceRoleLevel` (single nullable enum) replaced with `audienceRoleLevels` via a new `BroadcastNoticeAudienceRoleLevel` join table (`broadcastId`, `roleLevel` composite PK) — same shape as the department change. An empty `audienceRoleLevels` array keeps the same "not role-restricted (all role levels)" meaning the old `null` had. Existing single-role-targeted notices were migrated into the new join table, not dropped.
+- No "All Roles" wildcard option (unlike Departments' "Entire Institution") — every tenant member always has exactly one role level (department can be unassigned, role level can't), so that distinction doesn't apply here.
+- The broadcast's attached image now opens in a bounded card preview (header + close button, fixed size) instead of a bare full-screen image — matching how evidence image/PDF attachments are already previewed elsewhere in the app. No zoom/pan capability added — confirmed with the requester that none exists anywhere in the app yet to extend; this was a framing-only change.
+
+**Reason:** Consistency — there was no product reason for Departments to support multiple targets while Role Level didn't; both are audience-scope dimensions with the same shape. The image preview change matches the existing evidence-attachment visual pattern per explicit request.
+**Decided by:** User request this session.
+**Impact:** `docs/architecture/domain-model.md`'s `BroadcastNotice` entry, `docs/api/api-spec.md` §10 (`audienceRoleLevel` → `audienceRoleLevels` request/response field, breaking API change), `docs/ux/design-system.md` (new `RoleMultiSelect`/reframed `ImageLightbox` entry).
+
+---
+
+### 2026-07-24 — StickyNote gets a `colorCode` field
+
+**Changed:** `StickyNote` now has a `colorCode` field (6-digit hex `#RRGGBB`), optional at create/update, defaulting to `#FEF3C7`. Exposed on `GET/POST/PATCH /sticky-notes`.
+
+**Reason:** The Figma "Create Sticky" screen (node `392:2`) already designs a `ColorPicker` with themed swatches, but the domain model and API had no field to persist the choice — requested directly by the user.
+
+**Decided by:** User, direct request.
+
+**Impact:** `docs/architecture/domain-model.md` (StickyNote entity), `docs/api/api-spec.md` (§9), `swagger.ts`, Prisma migration `20260724000000_add_sticky_note_color_code`.
+
+### 2026-07-23 — New rule: StickyNote auto-deletes 3 days after overdue
+
+**Changed:** A `StickyNote` with `dueAt` set is now hard-deleted once `dueAt + 3 days <= NOW()`, via a new daily scheduler job (`stickyNoteRetentionSweep.job.ts`). Notes with no `dueAt` are unaffected; pin state doesn't exempt a note. No soft-delete step.
+
+**Reason:** User requested a retention policy so overdue personal reminders don't accumulate indefinitely once they're stale.
+
+**Decided by:** User, direct request.
+
+**Impact:** `docs/product/prd.md` §5.6, `docs/architecture/domain-model.md` (StickyNote entity), `docs/architecture/system-design.md` (Scheduler section — new job alongside `aiNudgeSweep.job.ts`), `changelog.md`.
+
+### 2026-07-22 — W100 resolved: OVERDUE status now reverts when due date is pushed forward
+
+**Changed:** `PATCH /tasks/:id` now reverts an `OVERDUE` task's status back to `IN_PROGRESS` (accepted) or `OPEN` (not yet accepted) when its `dueDate` is edited to today-or-later.
+
+**Reason:** User reported that pushing a task's due date into the future left it showing `OVERDUE`. Investigation found `OVERDUE` was a one-way transition — only the scheduled `runOverdue` sweep ever set it, and no code path ever reverted it, even when the due date no longer justified the status.
+
+**Decided by:** User confirmed this was a bug (not an intended business rule) and asked for the fix directly.
+
+**Impact:** `bolo-backend/src/services/task/updateTask.service.ts`, `docs/product/prd.md` §5.4, `docs/architecture/domain-model.md` (state machine + status propagation rules), `docs/api/api-spec.md` (`PATCH /tasks/:id`), `swagger.ts`, `docs/product/open-questions-web-v1.md` (W100).
+
+### 2026-07-22 — W99 resolved: cancelled subtasks no longer block parent completion
+
+**Changed:** A main task's completion gate (`POST /tasks/:id/done-d`) now treats a subtask as resolved if it's `DONE_D` **or** `CANCELLED` — previously it required literal `DONE_D` on every subtask.
+
+**Reason:** The PRD said a parent can complete once "all its subtasks (if any) are complete," but the implementation read that literally as `DONE_D`. Since `CANCELLED` is a terminal state (W12/W13) that can never transition to `DONE_D`, the old gate meant cancelling a single subtask permanently blocked its parent from ever being marked complete — with no way out short of deleting the subtask.
+
+**Decided by:** User, asked directly when the gap was found while answering a question about subtask cancellation. Chose to exclude `CANCELLED` subtasks from the gate (over: leaving the block in place, or cascading cancellation up to the parent).
+
+**Impact:** `bolo-backend/src/repositories/TaskRepository.ts` (`allSubtasksDoneD`), `docs/product/prd.md` §5.4, `docs/architecture/domain-model.md` (status propagation rules), `docs/api/api-spec.md` (`SUBTASKS_INCOMPLETE` + done-d/subtask sections), `swagger.ts`, `CLAUDE.md` business rules, `docs/product/open-questions-web-v1.md` (W99).
+
+### 2026-07-17 — Broadcast Notice: department audience scope becomes multi-select
+
+**Changed:**
+- Recipients → Departments is now a multi-select (checkboxes) — a sender can target several specific departments at once (e.g. Computer Science + Civil Engineering only), not just a single department or "All Departments". Role Level stays single-select.
+- Schema: `BroadcastNotice.audienceDeptId` (single nullable FK → Department) replaced with `audienceDeptIds` via a new `BroadcastNoticeAudienceDept` join table (`broadcastId`, `deptId` composite PK). An empty `audienceDeptIds` array keeps the same "not department-restricted (all departments)" meaning the old `null` had.
+- Publish validation unchanged in spirit: at least one of `audienceDeptIds`/`audienceRoleLevel` must be set — just array-aware now instead of single-value.
+
+**Reason:** User testing the composer needed to send one broadcast to two specific departments without also reaching the rest of the institution, and without posting it as two separate broadcasts. Considered a frontend-only fan-out (send one broadcast per selected department, no backend change) as a lower-effort alternative — explicitly rejected by the user in favor of extending the schema/API, so one selection produces one broadcast record.
+
+**Decided by:** User (explicit choice between frontend fan-out vs. backend schema/API extension, via AskUserQuestion mid-session).
+
+**Impact:** `docs/product/prd.md` §7, `docs/architecture/domain-model.md` (BroadcastNotice entity, table count 15→16), `docs/api/api-spec.md` §10, `CLAUDE.md`, `changelog.md` ([BE]/[FE]/[PRD] entry), `docs/ux/design-system.md` (CreateBroadcastNotice dropdown rebuild). `bolo-backend` (`feature/broadcast`, uncommitted) and `bolo-web` (`feature/broadcast-notice`, uncommitted) both touched — schema migration not yet generated/run (repo has no connected dev DB in this session; `npx prisma generate` was run to keep the client in sync with `schema.prisma`, but `prisma migrate dev` still needs to run against a real database before this is deployable).
+
+### 2026-07-16 — W112 resolved: AI Nudge first-login-of-the-day fast-track
+
+**Changed:** A user's first eligible nudge each day (Follow-up or Due-Proximity) now bypasses that type's interval gate (3h/6h) and fires on the next 15-min sweep tick, instead of potentially waiting hours purely by interval-timing coincidence.
+**Reason:** With office-hours gating already removed and pure interval gates in place, a user logging in for the first time that day — especially one with bursty usage (a few hours on, a few hours off) — could wait a long time for their first nudge for no reason other than unlucky timing.
+**Decided by:** User approved Option 1 of 4 presented.
+**Impact:** `domain-model.md`, `system-design.md` §2.5, `open-questions-web-v1.md` (W112 added, resolved). Built on `feature/ai-nudge-login-aware`, PR #52. Superseded 2026-08-18 (W113, above) once the `lastLoginAt` basis proved unreliable for PWA sessions.
+
+---
+
+### 2026-07-15 — PlatformAdmin (superadmin) built: W35 resolved (W98), tenant registration locked down
+
+**Changed:**
+- New `PlatformAdmin` entity — a cross-tenant actor, outside `Tenant`/RLS scoping entirely, not a `User` or `TenantMembership` role. Registers new tenants and adds/removes users in any tenant. Own Email+OTP auth flow, fully parallel to tenant-user login (separate OTP table, separate cookie, separate JWT shape). No self-registration — provisioned only via an ops-run seed script.
+- The existing `POST /onboard/register` endpoint — found during this work to be public/unauthenticated, undocumented in `api-spec.md`, and the only way tenants got created — is **removed**. Tenant creation now requires platform-admin auth via `POST /platform-admin/tenants`.
+
+**Reason:** The client needs a way to register new tenant orgs and manage member accounts without exposing an unauthenticated public endpoint, and without relying on a tenant's own `TOP` role (which is scoped inside that one tenant and can't act cross-tenant). This is the concrete design **W35** ("we would update new user through our admin portal for the backend") had pointed at since 2026-06-17 but never resolved.
+
+**Decided by:** User + Claude, via a design conversation confirming: (1) PlatformAdmin as a standalone model rather than a `User` flag, (2) superadmin owns tenant creation end-to-end (locking down the old public endpoint rather than running both in parallel), (3) Email+OTP auth to stay consistent with the rest of the app, (4) backend-only for MVP, no `bolo-web` UI.
+
+**Impact:** `docs/architecture/domain-model.md` (new "PlatformAdmin"/"PlatformAdminOtpCode" entities), `docs/api/api-spec.md` (§20, new endpoints + access matrix), `docs/ops/security.md` (new auth-flow subsection), `docs/product/open-questions-web-v1.md` (W98, supersedes W35). Backend code: `bolo-backend/prisma/schema.prisma` + 2 migrations, new `platformAdmin`/`platformAdminAuth` routes/controllers/services/repositories, `scripts/seedPlatformAdmin.ts`. No `bolo-web` changes.
+
+---
+
+### 2026-07-13 — AI Nudge scope narrowed (client-directed): Task-only, 2 Follow-up conditions, no blocking
+
+**Changed:** Client scoped down the built AI Nudge feature substantially after reviewing it: entities narrowed to **Task only** (Subtask/StickyNote/Broadcast dropped — a subtask is no longer distinguished from a task at all); Follow-up cut from 5 conditions to **2, assignee-only** (accepted-no-progress, unanswered-comment when the assignee owes the reply — the assigner is out of scope for Follow-up entirely); **no blocking behavior** anywhere (Skip never disabled/hidden at cap, panel never force-closed — a plain warning replaces the old disabled state, escalation still fires server-side regardless); feed capped at 5 items with priority-then-rotation ordering.
+**Reason:** Simplification after seeing the full original build — the 3 dropped Follow-up conditions were irreversible actions (Accept/Mark Complete) better taken deliberately from the task itself and already covered by the general Notification panel; blocking behavior was judged too aggressive for a nudge (vs. a hard gate).
+**Decided by:** Client, after a full feature review.
+**Impact:** `domain-model.md` row 8c/8d, `system-design.md` §2.6, `prd.md` §5.7, `api-spec.md` §11. Built on `feature/ai-nudge-scoped` (both repos) — `feature/ai-nudge` kept intact rather than modified in place. `NudgeSkipCounter.userId` dropped from the key (migration `20260712200810_nudge_scope_task_only`, moot once Broadcast's many-recipients problem left scope); `lastShownAt` added for feed rotation.
+
+---
+
 ### 2026-07-10 — AI Nudge backend built: W94 resolved, NudgeSkipCounter schema confirmed with tenantId+userId
 
 **Changed:**

@@ -1,7 +1,7 @@
 # BOLO — Security Requirements & Controls
 
 > Applies to all environments. Treat this as a checklist — check off items as they are implemented.
-> **Last updated:** 2026-06-20 — audit log added to V1 (W63 resolved). Web PRD v1.1. **Web platform: no device GPS in V1.** Controls deferred: voice encryption (W44), DPDP (W62).
+> **Last updated (bolo-backend-django sync 2026-08-22):** re-synced through upstream's 2026-07-15 state (PlatformAdmin/superadmin auth, W35 resolved — not yet built here). Previously (upstream 2026-06-20): audit log added to V1 (W63 resolved). Web PRD v1.1. **Web platform: no device GPS in V1.** Controls deferred: voice encryption (W44), DPDP (W62).
 
 ---
 
@@ -26,6 +26,19 @@
 - [x] On logout: both cookies cleared server-side (`Set-Cookie: token=; Max-Age=0` / `refresh_token=; Max-Age=0`); the current refresh token row is also revoked (bolo-backend-django). OTP row already deleted at verify time — nothing extra to clean up there.
 - [ ] On account removal: `TenantMembership` row deleted; an already-issued access token remains valid until it expires (max 15 min, bolo-backend-django) or the original Node backend's cookie expiry (7 days, unchanged there). Revoking all refresh tokens for the removed user (`RefreshTokenRepository.revoke_all_for_user`) on this path is not yet wired up — worth doing before this matters in practice.
 
+### Platform Admin (superadmin) auth — W35 resolved *(not yet built here — `apps/platform_admin` has the two models from the Phase 1 scaffold but no auth/views/services/repositories/urls; see CLAUDE.md)*
+
+> A `PlatformAdmin` is a cross-tenant actor, entirely outside `Tenant`/RLS scoping — not a `User`, not a `TenantMembership` role. Registers new tenants and can add/remove users in any tenant. Full design in `docs/architecture/domain-model.md` ("PlatformAdmin" section) and `docs/api/api-spec.md` §22 (this project's numbering — §20 upstream).
+
+- [x] Fully parallel auth flow to tenant users, same OTP/SMTP infra, deliberately kept separate everywhere it matters:
+  - Separate table: `PlatformAdminOtpCode`, not `OtpCode` — `OtpCode.email` is globally unique with no discriminator, so sharing it risks a platform-admin OTP request silently invalidating a tenant user's in-flight OTP on the same address.
+  - Separate cookie: `Set-Cookie: admin_token=<jwt>; HttpOnly; SameSite=Lax; Max-Age=604800` — never `token`, so a tenant session and a platform-admin session can coexist in the same browser without collision.
+  - Separate JWT payload shape: `{ adminId, email, isPlatformAdmin: true }` — no `tenantId`/`roleLevel` at all, so a tenant token can never be mistaken for (or pass validation as) an admin token, and vice versa.
+  - Separate middleware: `requirePlatformAdmin` (`platformAdminAuth.middleware.ts`) checks `isPlatformAdmin === true` on top of the standard JWT verify.
+- [x] **No self-registration** — there is no `POST` equivalent to create a `PlatformAdmin` via the API. The only way a row is created is `scripts/seedPlatformAdmin.ts`, run manually by ops. This is a deliberate gap, not an oversight: nobody should be able to grant themselves platform-admin access over the network.
+- [x] `POST /onboard/register` (the old public, no-auth tenant-registration endpoint) is **removed** — tenant creation now requires `requirePlatformAdmin`, closing what had been "the only public write endpoint in the system."
+- [x] Every platform-admin action (tenant creation, member add, member remove) writes an `AuditLog` row (`actorType: PLATFORM_ADMIN`, `actorId: null` — a `PlatformAdmin` isn't a `User` row, so its identity lives in `metadata` instead).
+
 ---
 
 ## Authorisation & tenant isolation
@@ -40,7 +53,8 @@
 
 | Gate | Checked by | Used for |
 |---|---|---|
-| `requireAuth` | `auth.middleware.ts` | Every route — validates JWT cookie, injects `req.user` |
+| `requireAuth` | `auth.middleware.ts` | Every tenant-scoped route — validates JWT cookie, injects `req.user` |
+| `requirePlatformAdmin` | `platformAdminAuth.middleware.ts` | Platform-admin routes only — validates separate `admin_token` cookie, injects `req.platformAdmin`; never accepts a tenant `token` |
 | `requireOrgRole(['TOP'])` | `rbac.middleware.ts` | Member invite/remove, tenant admin ops |
 | `requireOrgRole(['TOP','MID'])` | `rbac.middleware.ts` | Analytics, org chart |
 | `canBroadcast` | `BroadcastService` | Creating/publishing broadcast notices |
@@ -75,10 +89,10 @@ PII in scope (web V1): phone numbers, email addresses, voice recordings, voice t
 > **In V1 (W63 resolved 2026-06-20).** `AuditLog` table in schema V1.1 — immutable, append-only rows covering all critical actions.
 > **Write path resolved 2026-07-14 (W98/W99):** captured by a **generic Express middleware + static route-config table** (`src/middleware/auditLog.middleware.ts` + `src/config/auditRouteConfig.ts`), not by manual audit calls inside each service — see `system-design.md` §2.6. The one exception is login/logout, which route through `User.lastLoginAt`/`lastLogoutAt` field writes (W99) rather than a direct audit call.
 
-- [x] Every critical action writes an `audit_log` record, captured automatically by the generic middleware for any route present in `auditRouteConfig.ts`: task CRUD, status transitions, reassign, broadcast lifecycle, **evidence upload/delete (`DOCUMENT_UPLOADED`/`DOCUMENT_DELETED`, wired 2026-07-18)**, user login/logout (via `lastLoginAt`/`lastLogoutAt`, W99), **profile change (`USER_PROFILE_UPDATED`, wired 2026-07-18 — profile picture set/clear; `PATCH /me` name/language edits not yet wired)**, role change (platform-admin member add/remove, W101)
+- [x] Every critical action writes an `audit_log` record, captured automatically by the generic middleware for any route present in `auditRouteConfig.ts`: task CRUD, status transitions, reassign, broadcast lifecycle, **evidence upload/delete (`DOCUMENT_UPLOADED`/`DOCUMENT_DELETED`, wired 2026-07-18)**, **comment create/update/delete (`COMMENT_CREATED`/`COMMENT_UPDATED`/`COMMENT_DELETED`, wired 2026-07-25 — live-verified full success path)**, user login/logout (via `lastLoginAt`/`lastLogoutAt`, W99), **profile change (`USER_PROFILE_UPDATED`, wired 2026-07-18 — profile picture set/clear; `PATCH /me` name/language edits not yet wired)**, role change (platform-admin member add/remove, W101)
 - [ ] **Do not add manual `dispatchAuditLog()`-style calls in services/controllers** — a new mutating route gets audited by adding one row to `auditRouteConfig.ts`, not by editing the handler. (Matches the standing rule in root `CLAUDE.md`.)
 - [ ] Audit log is append-only — DB-level: no UPDATE or DELETE on `audit_logs` table; `AuditLogRepository` exposes `create()` only, no update/delete methods at all
-- [ ] Fields: `tenantId`, `actorId` (nullable for system events **and platform-admin actions** — `PlatformAdmin` isn't a `User` row, added 2026-07-17), `actorType` (USER | SYSTEM | PLATFORM_ADMIN), `action` (enum), `entityType` (**UPPERCASE**, W95; includes `TENANT` since 2026-07-17, `DOCUMENT` since 2026-07-18), `entityId`, `before` (JSON snapshot), `after` (JSON snapshot), `createdAt`
+- [ ] Fields: `tenantId`, `actorId` (nullable for system events **and platform-admin actions** — `PlatformAdmin` isn't a `User` row, added 2026-07-17), `actorType` (USER | SYSTEM | PLATFORM_ADMIN), `action` (enum), `entityType` (**UPPERCASE**, W95; includes `TENANT` since 2026-07-17, `DOCUMENT` since 2026-07-18, `COMMENT` since 2026-07-25), `entityId`, `before` (JSON snapshot), `after` (JSON snapshot), `createdAt`
 - [ ] `GET /audit-log?entityType=&entityId=` — paginated; assigner/admin only
 - [ ] CA/CS vertical requires longer retention — exact period TBD before first CA/CS firm onboarding
 - [ ] **Known gap (W97):** `STICKY_NOTE`/`PROJECT_LABEL` are listed as valid `entityType` filter values in `api-spec.md` §12 but have no `AuditAction` coverage or config rows yet — resolve before shipping filter validation
@@ -92,7 +106,10 @@ PII in scope (web V1): phone numbers, email addresses, voice recordings, voice t
 - [ ] File extension whitelist enforced (jpg, png, heic, pdf, docx, xlsx — re-confirm W25)
 - [ ] Max file size enforced (25 MB — re-confirm W25)
 - [ ] Virus/malware scanning on upload (ClamAV or cloud-native scan — TBD)
-- [ ] Signed URLs for evidence access (never expose raw S3 URLs)
+- [x] Evidence **retrieval** proxied through the API (`GET /tasks/:id/evidence/:eid/file`) instead of a pre-signed URL — a pre-signed URL's signature is its entire authorization, so once it's in a JSON response it's a copyable credential valid for its full TTL regardless of session state. The API re-checks assigner/assignee on every request and streams the S3 object server-side (own IAM role, no presigning). Upload still uses pre-signed PUT URLs (client → S3 direct); only the read path changed.
+- [x] Broadcast notice image **retrieval** proxied the same way (`GET /broadcast-notices/:id/image`) — this one was worse than evidence: `publishBroadcastNoticeService` used to mint a single pre-signed URL with a **25h TTL** and persist it on `imageUrl`, so the identical string was handed to every audience member's feed for the full 25h. Now `imageUrl` always stores the S3 key; the feed returns an app-relative path, and the endpoint re-checks sender-or-audience-membership on every request.
+- [ ] **Not yet built here (bolo-backend-django sync 2026-08-22):** Voice recording playback (`GET /tasks/:id/voice-recording/audio`) still returns `{ playbackUrl }`, a pre-signed URL — `VoiceRecordingService.get_playback_url` needs converting to the streaming pattern above (Evidence/Broadcast image already are). See CLAUDE.md.
+- [ ] **Not yet built here:** Profile picture retrieval — `GET /me`, `GET /users/:userId/profile-picture[/file]`, `GET /tenant/members`, `PATCH /me/profile-picture`, and the presign/confirm/delete flow are all undocumented-as-built — `apps/users` has no `views.py`/`urls.py` content at all yet. See CLAUDE.md.
 - [ ] Evidence files scoped to tenant: S3 key includes `tenantId/...`
 
 ---

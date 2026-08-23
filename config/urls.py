@@ -34,6 +34,8 @@ urlpatterns = [
     path('api/v1/sticky-notes/', include('apps.sticky_notes.urls')),
     path('api/v1/broadcast-notices/', include('apps.broadcasts.urls')),
     path('api/v1/search/', include('apps.search.urls')),
+    path('api/v1/nudges/', include('apps.notifications.urls')),
+    path('api/v1/notifications/', include('apps.notifications.notification_urls')),
     path('api/v1/upload/presign/', EvidencePresignView.as_view(), name='evidence-presign'),
     path('api/v1/upload/voice-presign/', VoicePresignView.as_view(), name='voice-presign'),
     path(

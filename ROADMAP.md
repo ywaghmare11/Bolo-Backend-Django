@@ -102,7 +102,7 @@ Each phase ends with a **"talking points"** line — memorize these, they're the
 
 ---
 
-## Phase 8 — Notifications, Celery, Redis — mostly built, see `changelog.md` 2026-08-12 (2)
+## Phase 8 — Notifications, Celery, Redis — complete, see `changelog.md` 2026-08-16
 
 - [x] `Notification` model + `dispatch_notification()` service — the only write path, called from every task/broadcast state-changing service (built in Phase 2/3)
 - [x] Celery + Redis as broker (built in `feature/roadmap-hardening`, 2026-07-23)
@@ -110,7 +110,8 @@ Each phase ends with a **"talking points"** line — memorize these, they're the
 - [x] Celery beat: daily cron scanning tasks for `TASK_DUE_TODAY`/`TASK_DUE_TOMORROW`/`TASK_OVERDUE` → in-app notification + email — `apps/tasks/tasks.py:task_due_proximity_sweep`, built 2026-08-12. Also closes a related latent gap found while building it: the `OVERDUE`→`OPEN`/`IN_PROGRESS` auto-revert-on-due-date-edit business rule had no implementation until this session, since nothing had ever set `OVERDUE` before.
 - [x] `apps/sticky_notes/tasks.py:sticky_note_reminder_sweep` — `REMINDER_FIRED` for `StickyNote.dueAt`, same session (not originally itemized in this phase, but the same "due-proximity sweep" shape, and `REMINDER_FIRED` had been sitting unbuilt since the Sticky Notes slice)
 - [x] Task retry policy: `autoretry_for=(SMTPException,)`, exponential backoff, max retries — and idempotency via persisted one-shot DB guards (`Task.due_today_notified_at`/`due_tomorrow_notified_at`, `StickyNote.reminder_fired`), not a cache/TTL — don't double-send if a retry fires after a partial success
-- [ ] `AI_NUDGE_FOLLOWUP`/`AI_NUDGE_DUE_PROXIMITY` — the recurring skip-cap/escalation nudge feed (`GET /nudges`, `NudgeSkipCounter`) — **explicitly not built**, a separate and considerably larger feature than the one-shot due-proximity notifications above; see `docs/architecture/domain-model.md`'s Notification Events table rows 8c/8d for the full spec if picked up later
+- [x] `AI_NUDGE_FOLLOWUP`/`AI_NUDGE_DUE_PROXIMITY` — the recurring skip-cap/escalation nudge feed (`GET /nudges`, `POST /nudges/:id/skip`, `POST /nudges/skip-all`, `NudgeSkipCounter`) — built 2026-08-16, `apps/notifications` (`nudge_rules.py`, `services.py:NudgeService`, `tasks.py`'s two Celery beat sweeps). Not built: the "first-login-of-the-day fast-track" interval-gate bypass from `domain-model.md` — designed for the original Node backend's single continuous-tick sweep, doesn't map onto this project's fixed-crontab-per-sweep-type shape; see `changelog.md` 2026-08-16.
+- [x] **General Notification panel** (`GET /notifications`, `PATCH /notifications/:id/read`, `POST /notifications/mark-all-read`, `GET /notifications/unread-count`) — this phase's own bullets above never itemized it, but it's been in `docs/api/api-spec.md` §11 since Phase 1 and had zero views/urls until this session found the gap during a 2026-08-22 docs re-sync. Built 2026-08-22, `apps/notifications` (`NotificationService`, mounted at `/api/v1/notifications/` alongside the `/api/v1/nudges/` mount already there). `dispatch_notification()` — the write side — needed no changes; this only added the read API on top of it.
 
 **Talking point:** idempotent task design — a Celery task can and will run more than once (worker crash after side-effect but before ack); design the notification-send to be safe to repeat (dedupe key, or check-then-act guarded by a unique constraint) rather than assuming exactly-once delivery. What was actually built: persisted per-row "already notified" flags, set only after a successful dispatch — a retry after a mid-sweep failure only reprocesses rows that never got marked, which is naturally idempotent without needing a separate dedupe-key table.
 

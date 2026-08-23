@@ -20,6 +20,7 @@ from django.urls import include, path
 from apps.broadcasts.views import BroadcastImagePresignView
 from apps.evidence.views import EvidencePresignView
 from apps.tasks.views import VoicePresignView
+from apps.users.views import ProfilePicturePresignView
 
 urlpatterns = [
     path('admin/', admin.site.urls),
@@ -37,11 +38,20 @@ urlpatterns = [
     path('api/v1/nudges/', include('apps.notifications.urls')),
     path('api/v1/notifications/', include('apps.notifications.notification_urls')),
     path('api/v1/platform-admin/', include('apps.platform_admin.urls')),
+    # /me, /me/profile-picture, /users/:userId/profile-picture[/file] -- no
+    # single shared prefix with the rest of this app's routes, so mounted at
+    # bare api/v1/ and left to apps.users.urls to define full sub-paths.
+    path('api/v1/', include('apps.users.urls')),
     path('api/v1/upload/presign/', EvidencePresignView.as_view(), name='evidence-presign'),
     path('api/v1/upload/voice-presign/', VoicePresignView.as_view(), name='voice-presign'),
     path(
         'api/v1/upload/broadcast-image-presign/',
         BroadcastImagePresignView.as_view(),
         name='broadcast-image-presign',
+    ),
+    path(
+        'api/v1/upload/profile-picture-presign/',
+        ProfilePicturePresignView.as_view(),
+        name='profile-picture-presign',
     ),
 ]

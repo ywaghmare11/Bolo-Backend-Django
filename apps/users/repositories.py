@@ -38,3 +38,17 @@ class UserRepository:
         return User.objects.create(
             tenant=tenant, name=name, email=email, phone=phone, preferred_lang=preferred_lang,
         )
+
+    @staticmethod
+    def update(user: User, **fields) -> User:
+        for key, value in fields.items():
+            setattr(user, key, value)
+        user.save()
+        return user
+
+    @staticmethod
+    def get_by_id_in_tenant(user_id, tenant_id) -> User:
+        try:
+            return User.objects.get(id=user_id, tenant_id=tenant_id)
+        except User.DoesNotExist:
+            raise NotFoundError("User", user_id) from None

@@ -45,6 +45,9 @@ INSTALLED_APPS = [
 
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
+    # First -- normalizes bolo-web's no-trailing-slash requests (the actual
+    # api-spec.md contract) before URL resolution. See apps/common/middleware.py.
+    "apps.common.middleware.NormalizeApiTrailingSlashMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
@@ -209,6 +212,17 @@ EMAIL_BACKEND = env("EMAIL_BACKEND", default="django.core.mail.backends.console.
 # SES_FROM_EMAIL is present-but-empty in .env.example (SES not wired up yet) --
 # `or` guards against that in addition to the truly-unset case.
 DEFAULT_FROM_EMAIL = env("SES_FROM_EMAIL", default="") or "noreply@bolo.local"
+
+# SMTP settings -- only read when EMAIL_BACKEND is the smtp backend. Local-dev-only
+# stand-in for real transactional email (Gmail app-password SMTP, e.g.) so OTP mails
+# actually land in an inbox during frontend testing, ahead of the real AWS SES wiring
+# CLAUDE.md's tech stack table calls for in prod. Never used unless EMAIL_BACKEND is
+# switched away from its console/SES defaults above.
+EMAIL_HOST = env("EMAIL_HOST", default="")
+EMAIL_PORT = env.int("EMAIL_PORT", default=587)
+EMAIL_HOST_USER = env("EMAIL_HOST_USER", default="")
+EMAIL_HOST_PASSWORD = env("EMAIL_HOST_PASSWORD", default="")
+EMAIL_USE_TLS = env.bool("EMAIL_USE_TLS", default=True)
 
 # Evidence file storage -- IAM-role-only via the default boto3 credential provider
 # chain (see apps/common/storage.py), no separate access-key secret to manage, same

@@ -44,6 +44,7 @@ class VerifyOtpView(APIView):
                 "name": user.name,
                 "tenantId": str(membership.tenant_id),
                 "tenantName": membership.tenant.name,
+                "tenantSlug": membership.tenant.url_slug,
                 "roleLevel": membership.role_level,
                 "roleLabel": membership.role_label,
                 "canBroadcast": membership.can_broadcast,

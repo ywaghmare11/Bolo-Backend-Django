@@ -7,6 +7,15 @@ from apps.common.models import TimestampedModel
 class Tenant(TimestampedModel):
     name = models.CharField(max_length=255)
     vertical = models.CharField(max_length=20, choices=Vertical.choices)
+    # Cosmetic post-login routing only (domain-model.md) -- drives bolo-web's
+    # /{urlSlug}/{firstName} path, never used for tenant scoping/authorization
+    # (that stays keyed on `id` from the JWT everywhere else). Nullable because
+    # the real assignment flow is PlatformAdmin's tenant-registration endpoint
+    # (POST /platform-admin/tenants), not built in this project yet -- see
+    # CLAUDE.md. Existing tenants are backfilled via migration in the meantime
+    # so bolo-web's PrivateRoute guard (which force-logs-out on a missing
+    # tenantSlug) doesn't break local login testing.
+    url_slug = models.CharField(max_length=40, unique=True, null=True, blank=True)
 
     class Meta:
         db_table = "tenants"

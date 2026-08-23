@@ -105,14 +105,38 @@ class BroadcastRepository:
         return qs.order_by("-created_at")
 
     @staticmethod
-    def list_sent(tenant_id, sender_id):
+    def list_sent(tenant_id, sender_id, from_date=None, to_date=None):
         # Excludes DRAFT (2026-08-03 upstream correction, docs/architecture/domain-model.md's
         # BroadcastNotice section) -- pending a resume/publish-draft UI action upstream.
         qs = BroadcastRepository._base_queryset().filter(
             tenant_id=tenant_id, sender_id=sender_id, status=BroadcastStatus.PUBLISHED,
         )
+        # from/to narrow by createdAt (when the sender composed/sent it), not the
+        # expiry window -- api-spec.md's documented semantics for these params.
+        if from_date is not None:
+            qs = qs.filter(created_at__gte=from_date)
+        if to_date is not None:
+            qs = qs.filter(created_at__lte=to_date)
         qs = BroadcastRepository._annotate_common(qs)
         return qs.order_by("-created_at")
+
+    @staticmethod
+    def attach_audience_size(tenant_id, broadcasts):
+        """Live count of members currently matching each row's audience scope,
+        not a publish-time snapshot -- a member who joins the tenant after
+        publish still counts, matching the "still visible/ackable" rule
+        already applied to the received-view audience match. Sent-view rows
+        are naturally few (one sender's own broadcasts), so one extra query
+        per row is fine -- same tolerance already accepted for
+        TenantRepository.list_with_counts."""
+        broadcast_list = list(broadcasts)
+        for broadcast in broadcast_list:
+            dept_ids = [d.department_id for d in broadcast.audience_depts.all()]
+            role_levels = [r.role_level for r in broadcast.audience_role_levels.all()]
+            broadcast.audience_size_annotated = len(
+                BroadcastRepository.resolve_audience_member_user_ids(tenant_id, dept_ids, role_levels),
+            )
+        return broadcast_list
 
     @staticmethod
     def resolve_audience_member_user_ids(tenant_id, dept_ids, role_levels) -> set:

@@ -5,6 +5,18 @@
 
 ---
 
+## 2026-08-23 (6)
+
+- `[BE]` **Task list view filters + counts: `open`/`overdue`/`done_a`/`by_label`/`due_this_week`** (`apps/tasks`) — closes the third of the four remaining contract gaps from the 2026-08-22 docs re-sync.
+  - `open`/`overdue`/`done_a` all share one new repository method, `TaskRepository.list_by_status(user, tenant_id, status, label_id)` — same shape as the existing `list_needs_attention`, one status instead of three.
+  - `by_label` has its own semantics, distinct from the simple `main_label_id` filter the other views use: main-label tasks (as assigner, **or** as assignee **without** a personal label override) **plus** personal-label tasks (as assignee) — `TaskRepository.list_by_label`. Requires `labelId`, `400` otherwise.
+  - `due_this_week` computes the current Monday-Sunday range server-locally (`_current_week_range()`, shared between the list view and the counts query so both use identical boundaries) and excludes `DRAFT`/`DONE_D`/`CANCELLED`.
+  - `GET /tasks/counts` gained `open`/`overdue`/`doneA`/`dueThisWeek` alongside the existing three fields; `by_label` has no count (requires a `labelId` the endpoint doesn't take).
+  - Six stale "not yet built" doc markers in `api-spec.md` updated in place.
+  - 10 new tests (274 total, all green) in a new `test_view_filters.py` — status-view participant scoping, all three `by_label` cases (assigner sees main-label tasks, assignee with a personal override doesn't see the main label but does see their own, assignee without an override sees the main label), `due_this_week` inclusion/exclusion at the week boundary and status exclusions, and the counts endpoint's four new fields. `ruff check` clean.
+
+---
+
 ## 2026-08-23 (5)
 
 - `[BE]` **Broadcast Notices: W110 "Entire Institution" + `sent`-view `audienceSize`/`from`/`to`/`updatedAt`** (`apps/broadcasts`) — closes the second of the four remaining contract gaps from the 2026-08-22 docs re-sync.

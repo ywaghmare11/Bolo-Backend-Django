@@ -5,6 +5,12 @@
 
 ---
 
+## 2026-08-25 (2)
+
+- `[STD]` **`ROADMAP.md` — new "Future — Production Deployment on AWS" tracking section, planning only, no code.** User direction: the backend's actual production target is AWS, and the pieces skipped in Phases 9/10 specifically because they needed real external infrastructure (Sentry, `django-prometheus`, Redis prompt caching) should be built for real then, not guessed at now against nothing. Consolidates what was previously three separate "scoped out" notes into one holding area: error tracking (real Sentry DSN vs. AWS-native CloudWatch alarms off the structured JSON logs Phase 10 already produces), metrics (`django-prometheus`+Grafana vs. CloudWatch Metrics/Managed Grafana), log shipping (currently stdout/stderr only — on ECS/Fargate this becomes a container log-driver config change, zero app code, precisely because the JSON format was already chosen with this in mind), and Redis prompt caching (Redis already exists here for Celery/cache, so this is deferred tuning, not a new dependency). Also flags `docs/ops/deployment.md` as still the original Node backend's inherited AWS/OpenShift reference doc, not this project's real runbook — that gets written once the actual AWS target (ECS vs. EKS vs. EC2, RDS, ElastiCache) is decided. Phase 9/10's own ROADMAP.md entries updated in place to point here instead of just saying "no account."
+
+---
+
 ## 2026-08-25
 
 - `[BE]` **Structured logging (`structlog`) with request-id/tenant-id/actor-id correlation**, `ROADMAP.md` Phase 10. Branch `feature/structured-logging-observability`.

@@ -3,31 +3,10 @@ import uuid
 
 from django.apps import apps as django_apps
 from django.urls import Resolver404, resolve
-from rest_framework_simplejwt.exceptions import TokenError
-from rest_framework_simplejwt.tokens import AccessToken
 
 from apps.common.audit_route_config import AUDIT_ROUTE_CONFIG
+from apps.common.request_identity import decode_access_cookie
 from apps.common.tasks import write_audit_log_task
-
-
-def decode_access_cookie(request):
-    """Independently reads + decodes the same httpOnly access-token cookie
-    apps.auth.authentication.CookieJWTAuthentication uses. This middleware can't rely
-    on request.tenant_id/request.user -- those are set on DRF's internal Request
-    wrapper created inside APIView.dispatch(), not on the underlying HttpRequest this
-    (plain Django) middleware holds a reference to, so they never propagate back here.
-    Returns (user_id, tenant_id), both None if there's no valid token (e.g. request-otp,
-    or verify-otp before the cookie it's about to set exists)."""
-    from apps.auth.tokens import ACCESS_COOKIE_NAME
-
-    raw = request.COOKIES.get(ACCESS_COOKIE_NAME)
-    if not raw:
-        return None, None
-    try:
-        token = AccessToken(raw)
-    except TokenError:
-        return None, None
-    return token["userId"], token["tenantId"]
 
 
 def _json_safe(value):

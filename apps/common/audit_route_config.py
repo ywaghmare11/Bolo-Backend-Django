@@ -52,7 +52,7 @@ def _response_data_field(key):
 
 
 def _logout_actor_id(request, match):
-    from apps.common.audit_middleware import decode_access_cookie
+    from apps.common.request_identity import decode_access_cookie
 
     actor_id, _tenant_id = decode_access_cookie(request)
     return actor_id

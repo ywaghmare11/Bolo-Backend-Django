@@ -15,15 +15,15 @@ unconfigured" -- Celery retries would only help a background job, not a request
 still waiting on its response.
 """
 import json
-import logging
 from datetime import date
 
+import structlog
 from django.conf import settings
 from django.utils import timezone
 
 from apps.common.enums import Priority
 
-logger = logging.getLogger("bolo")
+logger = structlog.get_logger("bolo")
 
 AI_TIMEOUT_SECONDS = 8
 TEXT_MIN_LENGTH = 3

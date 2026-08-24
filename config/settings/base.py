@@ -7,6 +7,7 @@ from datetime import timedelta
 from pathlib import Path
 
 import environ
+import structlog
 from celery.schedules import crontab
 
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
@@ -44,9 +45,14 @@ INSTALLED_APPS = [
 ]
 
 MIDDLEWARE = [
+    # Genuinely first -- binds request_id/method/path/actor_id/tenant_id to
+    # structlog's contextvars for the whole request, so every log line emitted
+    # anywhere below (views, services, the exception handler) carries the same
+    # correlation ids with no explicit passing. See apps/common/logging_middleware.py.
+    "apps.common.logging_middleware.RequestLoggingMiddleware",
     "django.middleware.security.SecurityMiddleware",
-    # First -- normalizes bolo-web's no-trailing-slash requests (the actual
-    # api-spec.md contract) before URL resolution. See apps/common/middleware.py.
+    # Normalizes bolo-web's no-trailing-slash requests (the actual api-spec.md
+    # contract) before URL resolution. See apps/common/middleware.py.
     "apps.common.middleware.NormalizeApiTrailingSlashMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
@@ -241,3 +247,52 @@ OPENAI_SEARCH_MODEL = env("OPENAI_SEARCH_MODEL", default="gpt-4o-mini")
 # Shares OPENAI_API_KEY with Search -- same "empty key = documented AI-unavailable
 # fallback" contract, not a separate credential to provision.
 OPENAI_EXTRACT_MODEL = env("OPENAI_EXTRACT_MODEL", default="gpt-4o-mini")
+
+# Structured logging (ROADMAP.md Phase 10, guidelines.md's Logging section). Every
+# log line is JSON with a "level" key -- both structlog.get_logger() calls (this
+# project's own code) and plain stdlib logging.getLogger() calls (Django/Celery/
+# third-party internals) end up going through the same formatter, via
+# ProcessorFormatter.wrap_for_formatter as the last processor in structlog's own
+# chain and the same JSONRenderer as the shared "foreign_pre_chain" for stdlib
+# records -- one consistent output shape regardless of which logging API emitted it.
+LOGGING = {
+    "version": 1,
+    "disable_existing_loggers": False,
+    "formatters": {
+        "json": {
+            "()": structlog.stdlib.ProcessorFormatter,
+            "processor": structlog.processors.JSONRenderer(),
+            "foreign_pre_chain": [
+                structlog.contextvars.merge_contextvars,
+                structlog.stdlib.add_log_level,
+                structlog.processors.TimeStamper(fmt="iso"),
+            ],
+        },
+    },
+    "handlers": {
+        "console": {"class": "logging.StreamHandler", "formatter": "json"},
+    },
+    "root": {"handlers": ["console"], "level": "INFO"},
+    "loggers": {
+        # Django's own request-error logging is redundant with request_finished
+        # (apps/common/logging_middleware.py) plus the exception handler's own
+        # unhandled_error log -- kept at WARNING so it only surfaces things neither
+        # of those already covers (e.g. startup/system checks).
+        "django": {"handlers": ["console"], "level": "WARNING", "propagate": False},
+    },
+}
+
+structlog.configure(
+    processors=[
+        structlog.contextvars.merge_contextvars,
+        structlog.stdlib.add_log_level,
+        structlog.stdlib.PositionalArgumentsFormatter(),
+        structlog.processors.TimeStamper(fmt="iso"),
+        structlog.processors.StackInfoRenderer(),
+        structlog.processors.format_exc_info,
+        structlog.stdlib.ProcessorFormatter.wrap_for_formatter,
+    ],
+    logger_factory=structlog.stdlib.LoggerFactory(),
+    wrapper_class=structlog.stdlib.BoundLogger,
+    cache_logger_on_first_use=True,
+)

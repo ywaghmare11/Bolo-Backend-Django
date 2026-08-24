@@ -12,8 +12,8 @@ which is called first.
 """
 import hashlib
 import json
-import logging
 
+import structlog
 from django.conf import settings
 from django.core.cache import cache
 from django.db.models import Q
@@ -23,7 +23,7 @@ from apps.labels.models import ProjectLabel
 from apps.tasks.models import Task
 from apps.tenants.models import TenantMembership
 
-logger = logging.getLogger("bolo")
+logger = structlog.get_logger("bolo")
 
 CACHE_TTL_SECONDS = 300
 LEVENSHTEIN_THRESHOLD = 2

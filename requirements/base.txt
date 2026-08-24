@@ -32,3 +32,6 @@ openai==1.109.1
 # API directly (localhost:8000) instead of through a same-origin nginx proxy like prod.
 # Only enabled in config/settings/dev.py, never base.py/prod.py.
 django-cors-headers==4.9.0
+# Structured JSON logging with request-id/tenant-id/actor-id correlation
+# (ROADMAP.md Phase 10, guidelines.md's Logging section) -- config/settings/base.py.
+structlog==26.1.0

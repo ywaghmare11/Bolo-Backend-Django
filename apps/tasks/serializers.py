@@ -2,6 +2,7 @@ from rest_framework import serializers
 
 from apps.comments.serializers import serialize_comment
 from apps.common.enums import Priority
+from apps.tasks.ai_extract import TEXT_MAX_LENGTH, TEXT_MIN_LENGTH
 
 
 class VoiceRecordingInputSerializer(serializers.Serializer):
@@ -41,6 +42,19 @@ class TaskUpdateSerializer(serializers.Serializer):
     mainLabelId = serializers.UUIDField(source="main_label_id", required=False, allow_null=True)
     description = serializers.CharField(required=False, allow_blank=True)
     evidenceRequired = serializers.BooleanField(source="evidence_required", required=False)
+
+
+class TaskExtractSerializer(serializers.Serializer):
+    text = serializers.CharField(min_length=TEXT_MIN_LENGTH, max_length=TEXT_MAX_LENGTH)
+
+
+def serialize_extraction(result: dict) -> dict:
+    return {
+        "title": result["title"],
+        "assigneeHint": result["assignee_hint"],
+        "dueDate": result["due_date"].isoformat() if result["due_date"] else None,
+        "priority": result["priority"],
+    }
 
 
 class SubtaskCreateSerializer(serializers.Serializer):

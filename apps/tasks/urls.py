@@ -13,6 +13,7 @@ from apps.tasks.views import (
     TaskDetailView,
     TaskDoneAView,
     TaskDoneDView,
+    TaskExtractView,
     TaskListCreateView,
     TaskRemindView,
     VoiceRecordingAudioView,
@@ -22,6 +23,7 @@ from apps.tasks.views import (
 urlpatterns = [
     path("", TaskListCreateView.as_view(), name="task-list-create"),
     path("counts/", TaskCountsView.as_view(), name="task-counts"),
+    path("extract/", TaskExtractView.as_view(), name="task-extract"),
     path("<uuid:task_id>/", TaskDetailView.as_view(), name="task-detail"),
     path("<uuid:task_id>/accept/", TaskAcceptView.as_view(), name="task-accept"),
     path("<uuid:task_id>/done-a/", TaskDoneAView.as_view(), name="task-done-a"),

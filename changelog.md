@@ -5,6 +5,20 @@
 
 ---
 
+## 2026-08-24 (2)
+
+- `[BE]` **OpenAI-powered natural-language task extraction** (`apps/tasks`), `ROADMAP.md` Phase 9. Branch `feature/openai-task-extraction`, held locally per user request — not pushed, so this can be walked through before it goes up.
+  - New `POST /tasks/extract`: raw text (a rough voice transcript or free-form typed input) in, `{title, assigneeHint, dueDate, priority}` suggestion out to pre-fill a create-task form. Not a port — no upstream `bolo-backend` equivalent; new `docs/api/api-spec.md` §23 documents it from scratch, flagged inline as new rather than silently inserted into the numbering as if it always existed.
+  - `apps/tasks/ai_extract.py` (new) follows `apps/search/ai_classify.py`'s established precedent closely: one mockable `call_openai_extract()` boundary (the only place the `openai` package is imported), `OPENAI_API_KEY` optional (shared with Search, new `OPENAI_EXTRACT_MODEL` setting alongside it), same "AI unavailable → documented all-null fallback, never a hard failure" shape.
+  - **Documented decision, not left ambiguous**: synchronous call with an 8s timeout inside the request, not a Celery job the frontend polls. Phase 9's own ROADMAP text offered both; the poll shape needs a job-id endpoint this project's contract doesn't have, to work around a call that already degrades cleanly in-process — and Search's existing synchronous-plus-timeout precedent was already proven in this codebase. Never blocks task creation: `OPENAI_API_KEY` unset (this sandbox's real state), a timeout/exception, or malformed/non-dict AI JSON all collapse to the same all-`null` `200` response.
+  - `assigneeHint` is deliberately just the extracted name text, not resolved against the tenant roster the way Search's `resolve_person` does — the frontend's own assignee picker/autocomplete handles that lookup; a wrong hint here costs a different dropdown click, never a silent wrong assignment the way a mis-resolved filter would.
+  - Priority normalized server-side against a real `Priority` enum via an alias table (same shape as Search's `PRIORITY_ALIASES`); due date parsed as strict `YYYY-MM-DD`; both dropped to `null`, not passed through, if the AI's value doesn't validate.
+  - Redis prompt caching (Search does this) left as the documented optional talking point ROADMAP.md itself flagged as optional — not built this pass.
+  - No `Notification` dispatch — nothing is created or mutated by this endpoint, so there's no state-change event for `dispatch_notification()` to fire.
+  - 14 new tests (`apps/tasks/tests/test_ai_extract.py`, 308 total, all green): full successful extraction, missing/wrong-typed/unparseable individual fields normalized to `null` without crashing, non-dict AI response, timeout, generic exception, and no-API-key-configured (the actual state of this sandbox) — all resolving to the same `200` all-null shape. `ruff check` clean.
+
+---
+
 ## 2026-08-24
 
 - `[STD]` **`ROADMAP.md` Phase 15 revised — standalone frontend decision + ETL detail, sequenced after Phases 9-14.** Two corrections to the 2026-08-23 (3) planning entry, both from further discussion, no code this session:

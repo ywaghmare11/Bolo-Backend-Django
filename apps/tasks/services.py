@@ -6,6 +6,7 @@ from apps.common.exceptions import ConflictError, ForbiddenError, NotFoundError,
 from apps.labels.repositories import LabelRepository
 from apps.labels.services import LabelService
 from apps.notifications.services import dispatch_notification
+from apps.tasks.ai_extract import extract_fields
 from apps.tasks.repositories import TaskRepository, VoiceRecordingRepository
 from apps.users.repositories import UserRepository
 
@@ -402,3 +403,7 @@ class TaskService:
     @staticmethod
     def attach_latest_comments(tasks):
         return TaskRepository.attach_latest_comments(tasks)
+
+    @staticmethod
+    def extract_task_fields(text):
+        return extract_fields(text)

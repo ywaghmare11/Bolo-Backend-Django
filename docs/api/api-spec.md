@@ -2530,6 +2530,40 @@ Writes a single `AuditLog` row per call: `action: MEMBERS_BULK_IMPORTED`, `actor
 
 ---
 
+## 23. Task Extraction (AI) *(new, bolo-backend-django ROADMAP.md Phase 9, no equivalent in the original bolo-backend contract)*
+
+Not a port — this endpoint doesn't exist upstream. Voice transcription and §14's Voice AI SDK dispatch already handle *fully structured* voice commands client-side; this endpoint is for the opposite case — raw, unstructured text (a rough voice transcript or something typed free-form) that the user wants turned into a **draft** to review, not an action to execute. It never creates a task and is never in the create-task critical path: every field it returns is optional and user-editable before `POST /tasks` is ever called, and the endpoint itself degrades to an all-null response — never an error — if the AI provider is unavailable. See `CLAUDE.md`'s Phase 9 changelog entry for why this is a synchronous call with a tight timeout rather than a Celery job the frontend polls.
+
+### POST /tasks/extract
+
+**Access:** `requireAuth`.
+
+```json
+Request: { "text": "ask Bob Iyer to submit the self-study report by Friday, urgent" }
+
+Response 200:
+{
+  "data": {
+    "title": "Submit the self-study report",
+    "assigneeHint": "Bob Iyer",
+    "dueDate": "2026-08-28",
+    "priority": "P1"
+  },
+  "message": "OK"
+}
+```
+
+- `text` — required, 3–2000 chars.
+- `assigneeHint` is the **name as extracted from the text**, not a resolved `userId` — this endpoint never queries the tenant roster or Global Search's person-resolution layer (`apps/search/ai_classify.py:resolve_person`); the frontend runs its own assignee picker/autocomplete against the hint, same as a user would type a name into that picker manually. Deliberately simpler than Search's roster-grounded resolution, since a wrong hint here just means the user picks a different name from a dropdown — it never silently assigns a task to the wrong person the way a mis-resolved search filter silently would.
+- `dueDate` is an absolute `YYYY-MM-DD`, resolved from any relative phrase ("tomorrow", "by Friday") against the server's current date at request time.
+- `priority` is normalized to a real `Priority` enum value (`P1`–`P4`) server-side; an AI-returned value that doesn't map to a known alias is dropped (`null`), never passed through unvalidated.
+- Every field is `null` when: no `OPENAI_API_KEY` is configured (this project's dev sandbox default), the AI call times out or errors, or the AI's own response is malformed/unparseable JSON. All three are the same documented fallback — the response is still `200`, never a `5xx`, and the frontend just renders an empty form.
+- Not cached (unlike `/search/*`'s per-`(query, source, userId, tenantId)` cache) — deliberately deferred as optional, see `CLAUDE.md`'s Phase 9 changelog entry; each call re-hits OpenAI when a key is configured.
+
+**Errors:** 400 `VALIDATION_ERROR` (`text` under 3 or over 2000 chars, or missing) · 401
+
+---
+
 ## Appendix — Route × Middleware Matrix
 
 | Route | Auth | Role guard | Ownership check |
@@ -2570,6 +2604,7 @@ Writes a single `AuditLog` row per call: `action: MEMBERS_BULK_IMPORTED`, `actor
 | POST /notifications/mark-all-read | requireAuth | none | service: recipientId = me |
 | GET /audit-log | requireAuth | requireOrgRole(['TOP']) | service: or assignerId of entity |
 | GET /search/tasks, GET /search/stickies | requireAuth | none | PostgreSQL + AI query-understanding layer, scoped per-bucket (§13) — not OpenSearch |
+| POST /tasks/extract | requireAuth | none | none — draft-only, never persists (§23) |
 | POST /voice/dispatch | requireAuth | none | service: same as target endpoint |
 | GET /me, PATCH /me | requireAuth | none | JWT userId |
 | POST /upload/profile-picture-presign, PATCH/DELETE /me/profile-picture | requireAuth | none | JWT userId; always targets caller's own picture |

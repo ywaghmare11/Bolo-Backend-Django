@@ -236,3 +236,8 @@ AWS_S3_REGION = env("AWS_S3_REGION", default="ap-south-1")
 # back to a raw keyword classification, never a hard failure), not a misconfiguration.
 OPENAI_API_KEY = env("OPENAI_API_KEY", default="")
 OPENAI_SEARCH_MODEL = env("OPENAI_SEARCH_MODEL", default="gpt-4o-mini")
+
+# Natural-language task field extraction (ROADMAP.md Phase 9, apps/tasks/ai_extract.py).
+# Shares OPENAI_API_KEY with Search -- same "empty key = documented AI-unavailable
+# fallback" contract, not a separate credential to provision.
+OPENAI_EXTRACT_MODEL = env("OPENAI_EXTRACT_MODEL", default="gpt-4o-mini")

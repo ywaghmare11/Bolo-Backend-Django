@@ -9,10 +9,12 @@ from apps.tasks.serializers import (
     SubtaskCreateSerializer,
     TaskCreateSerializer,
     TaskDetailSerializer,
+    TaskExtractSerializer,
     TaskListItemSerializer,
     TaskUpdateSerializer,
     VoiceAudioConfirmSerializer,
     VoicePresignSerializer,
+    serialize_extraction,
     serialize_task_created,
     serialize_voice_recording,
 )
@@ -56,6 +58,15 @@ class TaskCountsView(APIView):
     def get(self, request):
         counts = TaskService.get_counts(request.user, request.tenant_id)
         return success_response(counts, "OK")
+
+
+class TaskExtractView(APIView):
+    def post(self, request):
+        serializer = TaskExtractSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        result = TaskService.extract_task_fields(serializer.validated_data["text"])
+        return success_response(serialize_extraction(result), "OK")
 
 
 class TaskDetailView(APIView):

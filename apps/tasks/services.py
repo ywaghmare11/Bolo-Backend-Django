@@ -1,6 +1,8 @@
+from django.core.cache import cache
 from django.db import transaction
 from django.utils import timezone
 
+from apps.common import caching
 from apps.common.enums import AcceptanceStatus, NotificationType, TaskStatus
 from apps.common.exceptions import ConflictError, ForbiddenError, NotFoundError, ValidationError
 from apps.labels.repositories import LabelRepository
@@ -76,6 +78,7 @@ class TaskService:
                 actor_name=user.name,
                 entity_title=task.title,
             )
+        caching.bust_task_counts(tenant_id, user.id, assignee.id)
         return task
 
     @staticmethod
@@ -84,6 +87,7 @@ class TaskService:
         if task.assigner_id != user.id:
             raise ForbiddenError("You are not the assigner of this task")
 
+        previous_assignee_id = task.assignee_id
         update_fields = {}
 
         if "assignee_id" in fields:
@@ -142,6 +146,9 @@ class TaskService:
             actor_name=user.name,
             entity_title=task.title,
         )
+        caching.bust_task_counts(
+            tenant_id, task.assigner_id, task.assignee_id, previous_assignee_id,
+        )
         return task
 
     @staticmethod
@@ -151,7 +158,15 @@ class TaskService:
             raise ForbiddenError("You are not the assigner of this task")
         if task.status == TaskStatus.DONE_D:
             raise ConflictError("Task is already completed and archived", code="TASK_TERMINAL")
+        # A delete cascades to every subtask (TaskRepository.delete), so the
+        # subtask participants' counts change too, not just the parent's.
+        affected_user_ids = {task.assigner_id, task.assignee_id}
+        for sub_assigner_id, sub_assignee_id in task.subtasks.values_list(
+            "assigner_id", "assignee_id",
+        ):
+            affected_user_ids.update((sub_assigner_id, sub_assignee_id))
         TaskRepository.delete(task)
+        caching.bust_task_counts(tenant_id, *affected_user_ids)
 
     @staticmethod
     def accept_task(user, tenant_id, task_id):
@@ -176,6 +191,7 @@ class TaskService:
             actor_name=user.name,
             entity_title=task.title,
         )
+        caching.bust_task_counts(tenant_id, task.assigner_id, task.assignee_id)
         return task
 
     @staticmethod
@@ -205,6 +221,7 @@ class TaskService:
             actor_name=user.name,
             entity_title=task.title,
         )
+        caching.bust_task_counts(tenant_id, task.assigner_id, task.assignee_id)
         return task
 
     @staticmethod
@@ -246,6 +263,7 @@ class TaskService:
             actor_name=user.name,
             entity_title=task.title,
         )
+        caching.bust_task_counts(tenant_id, task.assigner_id, task.assignee_id)
         return task
 
     @staticmethod
@@ -260,9 +278,12 @@ class TaskService:
         task.status = TaskStatus.CANCELLED
         task.save()
 
+        affected_user_ids = {task.assigner_id, task.assignee_id}
         for subtask in task.subtasks.exclude(status=TaskStatus.DONE_D):
             subtask.status = TaskStatus.CANCELLED
             subtask.save()
+            affected_user_ids.update((subtask.assigner_id, subtask.assignee_id))
+        caching.bust_task_counts(tenant_id, *affected_user_ids)
 
         if not was_draft:
             dispatch_notification(
@@ -333,6 +354,9 @@ class TaskService:
             actor_name=user.name,
             entity_title=subtask.title,
         )
+        # The new subtask is a fresh OPEN row for its assigner (the parent's
+        # assignee) and its assignee -- the parent's own assigner has no new row.
+        caching.bust_task_counts(tenant_id, subtask.assigner_id, subtask.assignee_id)
         return subtask
 
     @staticmethod
@@ -398,7 +422,17 @@ class TaskService:
 
     @staticmethod
     def get_counts(user, tenant_id):
-        return TaskRepository.counts(user, tenant_id)
+        """Cache-aside (ROADMAP.md Phase 12): the tab badge counts are read on
+        nearly every page load and recomputed from a handful of COUNTs. Every
+        task write path in this service calls caching.bust_task_counts() for the
+        affected users; the TTL is only a backstop for a missed bust."""
+        key = caching.task_counts_key(tenant_id, user.id)
+        cached = cache.get(key)
+        if cached is not None:
+            return cached
+        counts = TaskRepository.counts(user, tenant_id)
+        cache.set(key, counts, caching.TASK_COUNTS_TTL)
+        return counts
 
     @staticmethod
     def attach_latest_comments(tasks):

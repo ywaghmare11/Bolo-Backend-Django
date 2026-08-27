@@ -85,6 +85,9 @@ def test_task_detail_query_count_does_not_scale_with_related_row_count(django_as
             )
 
     _add_related(1)
+    # One warm-up call so the per-user label list (cached, see Phase 12) is
+    # already populated -- we're measuring steady state, not the cold-cache miss.
+    assert client.get(f"/api/v1/tasks/{parent.id}/").status_code == 200
     with CaptureQueriesContext(connection) as ctx:
         resp = client.get(f"/api/v1/tasks/{parent.id}/")
     assert resp.status_code == 200

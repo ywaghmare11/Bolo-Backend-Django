@@ -4,6 +4,7 @@ from smtplib import SMTPException
 from celery import shared_task
 from django.utils import timezone
 
+from apps.common import caching
 from apps.common.enums import NotificationType, TaskStatus
 from apps.notifications.services import dispatch_notification
 from apps.tasks.models import Task
@@ -82,4 +83,7 @@ def task_due_proximity_sweep():
     for task in newly_overdue:
         task.status = TaskStatus.OVERDUE
         task.save(update_fields=["status"])
+        # OPEN -> OVERDUE moves the task between the `open` and `overdue` tab
+        # counts, so the cached counts for both participants are now stale.
+        caching.bust_task_counts(task.tenant_id, task.assigner_id, task.assignee_id)
         _notify_due_proximity(task, NotificationType.TASK_OVERDUE)

@@ -5,6 +5,18 @@
 
 ---
 
+## 2026-08-27 (2)
+
+- `[BE]` **Redis cache-aside for the dashboard counts + label lists**, `ROADMAP.md` Phase 12. Branch `feature/redis-caching` off `main`.
+  - New `apps/common/caching.py` — key builders (`task_counts_key(tenant_id, user_id)`, `label_list_key(user_id)`), TTL constants, and `bust_task_counts(tenant_id, *user_ids)` / `bust_label_list(user_id)` helpers (both tolerate `None`/duplicate ids). Uses Django's single `default` cache alias, already pointed at Redis in `base.py` (LocMem in `test.py`) since the Phase 2 throttle work — no new settings.
+  - **`GET /tasks/counts`** — cache-aside in `TaskService.get_counts`, keyed per `(tenant, user)`, **5-min TTL** (counts move often, so keep the stale window short). Busted from every mutating path in `TaskService`: `create_task`, `update_task`, `delete_task`, `accept_task`, `mark_done_a`, `mark_done_d`, `cancel_task`, `create_subtask` — plus `apps/tasks/tasks.py:task_due_proximity_sweep`'s `OPEN→OVERDUE` transition (moves a task between the `open` and `overdue` tab counts). `update_task` captures the previous assignee id before the write so a **reassignment** busts old assignee + new assignee + assigner; `cancel_task`/`delete_task` also bust every cascaded subtask's participants.
+  - **`GET /labels/mine` + `/labels/shared`** — cache-aside in `LabelService.list_my_labels`, keyed per creator, **10-min TTL** (a user hand-edits their own small label pool rarely). One entry serves both endpoints *and* the task-detail `myPersonalLabels` list. Busted on `create_label` / `update_label` / `delete_label` (all creator-scoped, single key). The service now returns `list(qs)` of model instances rather than a lazy `QuerySet` — both consumers (`LabelListItemSerializer(many=True)`, `TaskDetailSerializer`'s `[label.name for …]`) work unchanged, wire output byte-identical.
+  - **TTL is a backstop, not the correctness mechanism** — documented in both the module docstring and each `get_*` docstring: a user who just created a task would otherwise see a stale badge for up to the whole TTL, so the `bust_*` calls on the write paths are what keep the value right; the TTL only covers a bust we forgot to wire or a cross-process race.
+  - Adjusted `test_task_detail_query_count_does_not_scale_with_related_row_count` (Phase 11) — it now does one warm-up GET before capturing the baseline, since the detail endpoint's query count legitimately drops by one once the per-user label list is cached (the test measures steady state, not the cold-cache miss).
+  - 13 new tests (`apps/tasks/tests/test_counts_caching.py`, `apps/labels/tests/test_label_caching.py`, **336 total, all green**): second call served from cache with `django_assert_num_queries(0)`, per-user/per-creator key isolation, and each write path (create/reassign/status-transition/cancel for counts; create/rename/delete + end-to-end API for labels) proven to bust. `ruff check .` / `manage.py check` / `makemigrations --check` clean (no schema change).
+
+---
+
 ## 2026-08-27
 
 - `[BE]` **Test-coverage hardening**, `ROADMAP.md` Phase 11. Branch `feature/test-coverage-hardening` off `main` (Phase 10 merged as PR #10 before this started).

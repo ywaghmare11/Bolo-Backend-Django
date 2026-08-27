@@ -158,6 +158,8 @@ Each phase ends with a **"talking points"** line — memorize these, they're the
 
 **Talking point:** cache invalidation strategy — explain exactly which write paths call `cache.delete()`/`cache.set()` and why a TTL alone isn't enough for correctness here.
 
+**Built 2026-08-27** (`feature/redis-caching`) — `apps/common/caching.py` holds the key builders + `bust_*` helpers. `GET /tasks/counts` cached per `(tenant, user)` with a 5-min TTL, busted from every mutating `TaskService` method (`create`/`update`/`delete`/`accept`/`done_a`/`done_d`/`cancel`/`create_subtask`) and the `task_due_proximity_sweep` `OPEN→OVERDUE` transition — reassignment and cascade-cancel/-delete bust every affected user (old + new assignee, subtask participants). Label list cached per creator with a 10-min TTL (one entry serves `/labels/mine`, `/labels/shared`, and the task-detail `myPersonalLabels`), busted on label create/rename/recolor/delete. 13 new tests. Full breakdown in `changelog.md`'s 2026-08-27 (2) entry.
+
 ---
 
 ## Phase 13 — Dockerization, CI, API docs

@@ -491,3 +491,34 @@ class TestBroadcastImage:
         draft = _create_draft(client).data["data"]
         resp = client.get(f"/api/v1/broadcast-notices/{draft['id']}/image/")
         assert resp.status_code == 404
+
+
+@pytest.mark.django_db
+class TestBroadcastTenantIsolation:
+    """docs/engineering/testing-strategy.md critical case: "Tenant A cannot
+    read/write Tenant B data (every entity)". `test_ack_by_non_audience_forbidden`
+    covers a same-tenant non-audience member (-> 403); a caller from a different
+    tenant is rejected by BroadcastRepository.get_by_id_or_404's tenant filter
+    (-> 404) before any audience check runs."""
+
+    def test_caller_from_another_tenant_cannot_edit_ack_or_delete(self, tenant, sender, dept_cs):
+        client = _authed_client(sender, tenant.id)
+        draft = _create_draft(client, audienceDeptIds=[str(dept_cs.id)]).data["data"]
+
+        other_tenant = TenantFactory()
+        intruder = UserFactory(tenant=other_tenant)
+        other_client = _authed_client(intruder, other_tenant.id)
+
+        assert (
+            other_client.patch(
+                f"/api/v1/broadcast-notices/{draft['id']}/",
+                {"messageHtml": "<p>hijacked</p>"},
+                format="json",
+            ).status_code
+            == 404
+        )
+        assert (
+            other_client.post(f"/api/v1/broadcast-notices/{draft['id']}/ack/").status_code == 404
+        )
+        assert other_client.delete(f"/api/v1/broadcast-notices/{draft['id']}/").status_code == 404
+        assert BroadcastNotice.objects.filter(id=draft["id"]).exists()

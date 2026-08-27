@@ -125,3 +125,30 @@ class TestCommentEditDelete:
         resp = _authed_client(assignee, tenant.id).delete(f"/api/v1/tasks/{task}/comments/{comment_id}/")
         assert resp.status_code == 403
         assert Comment.objects.filter(id=comment_id).exists()
+
+
+@pytest.mark.django_db
+class TestCommentTenantIsolation:
+    """docs/engineering/testing-strategy.md critical case: "Tenant A cannot
+    read/write Tenant B data (every entity)". The outsider tests above cover a
+    same-tenant non-participant (-> 403); a caller from a *different* tenant is
+    denied one step earlier by the tenant-scoped task lookup (-> 404, never
+    revealing that the task exists)."""
+
+    def test_caller_from_another_tenant_cannot_read_or_write_comments(
+        self, tenant, assigner, task,
+    ):
+        Comment.objects.create(task_id=task, author=assigner, text="internal note")
+
+        other_tenant = TenantFactory()
+        intruder = UserFactory(tenant=other_tenant)
+        client = _authed_client(intruder, other_tenant.id)
+
+        assert client.get(f"/api/v1/tasks/{task}/comments/").status_code == 404
+        assert (
+            client.post(
+                f"/api/v1/tasks/{task}/comments/", {"text": "injected"}, format="json",
+            ).status_code
+            == 404
+        )
+        assert Comment.objects.filter(task_id=task).count() == 1

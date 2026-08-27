@@ -219,3 +219,19 @@ class TestEvidenceAuditTrail:
 
         log = AuditLog.objects.get(entity_type="DOCUMENT", entity_id=evidence_id, action="DOCUMENT_DELETED")
         assert log.after is None
+
+
+@pytest.mark.django_db
+class TestEvidenceTenantIsolation:
+    """docs/engineering/testing-strategy.md critical case: "Tenant A cannot
+    read/write Tenant B data (every entity)". The outsider tests above are a
+    same-tenant non-participant (-> 403); a caller from another tenant is stopped
+    by the tenant-scoped task lookup first (-> 404)."""
+
+    def test_caller_from_another_tenant_cannot_presign_or_list_evidence(self, tenant, task):
+        other_tenant = TenantFactory()
+        intruder = UserFactory(tenant=other_tenant)
+        client = _authed_client(intruder, other_tenant.id)
+
+        assert _presign(client, task).status_code == 404
+        assert client.get(f"/api/v1/tasks/{task}/evidence/").status_code == 404

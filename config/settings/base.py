@@ -19,6 +19,13 @@ SECRET_KEY = env("DJANGO_SECRET_KEY")
 DEBUG = env.bool("DEBUG", default=False)
 ALLOWED_HOSTS = env.list("ALLOWED_HOSTS", default=[])
 
+# drf-spectacular emits W002 ("unable to guess serializer") under `check --deploy`
+# for every plain APIView. That's the whole codebase by design -- views are thin,
+# return the shared {data,message} envelope, and don't subclass GenericAPIView.
+# The auto-generated schema is still valid; per-endpoint request/response bodies
+# via @extend_schema are a tracked follow-up, not a prod-readiness blocker.
+SILENCED_SYSTEM_CHECKS = ["drf_spectacular.W002"]
+
 
 INSTALLED_APPS = [
     "django.contrib.admin",
@@ -28,6 +35,8 @@ INSTALLED_APPS = [
     "django.contrib.messages",
     "django.contrib.staticfiles",
     "rest_framework",
+    "drf_spectacular",
+    "drf_spectacular_sidecar",
     "apps.common",
     "apps.platform_admin",
     "apps.tenants",
@@ -132,6 +141,9 @@ REST_FRAMEWORK = {
     "DEFAULT_PAGINATION_CLASS": "apps.common.pagination.BoloPageNumberPagination",
     "PAGE_SIZE": 20,
     "EXCEPTION_HANDLER": "config.exception_handler.bolo_exception_handler",
+    # drf-spectacular inspects views through this to build the OpenAPI schema
+    # (GET /api/v1/schema/). It only reads view metadata -- no runtime behaviour change.
+    "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
     # Only apply throttling where a view opts in via throttle_classes/throttle_scope --
     # not a DEFAULT_THROTTLE_CLASSES global, since only the OTP-request endpoint needs it today.
     "DEFAULT_THROTTLE_RATES": {
@@ -142,6 +154,26 @@ REST_FRAMEWORK = {
         # unlike DRF's in-memory cache which is per-process and useless beyond one worker.
         "otp_request": "5/min",
     },
+}
+
+# OpenAPI 3 schema + browsable docs (ROADMAP.md Phase 13). The schema is generated
+# from the DRF views on demand; keep the human contract in docs/api/api-spec.md as
+# the source of truth and treat this as the machine-readable mirror of it.
+SPECTACULAR_SETTINGS = {
+    "TITLE": "BOLO Backend API",
+    "DESCRIPTION": (
+        "Task & delegation API for Indian teams. Django/DRF re-implementation of the "
+        "BOLO backend -- same wire contract as docs/api/api-spec.md."
+    ),
+    "VERSION": "1.0.0",
+    # The schema endpoint returns the spec itself; don't also embed a copy of it in
+    # every Swagger/ReDoc HTML response.
+    "SERVE_INCLUDE_SCHEMA": False,
+    # Serve the Swagger UI / ReDoc JS+CSS from our own static files (vendored by
+    # drf-spectacular-sidecar) instead of a jsdelivr CDN -- no external runtime dep.
+    "SWAGGER_UI_DIST": "SIDECAR",
+    "SWAGGER_UI_FAVICON_HREF": "SIDECAR",
+    "REDOC_DIST": "SIDECAR",
 }
 
 # Redis-backed cache -- DRF's ScopedRateThrottle reads/writes through Django's default

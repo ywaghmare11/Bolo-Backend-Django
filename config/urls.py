@@ -16,6 +16,11 @@ Including another URLconf
 """
 from django.contrib import admin
 from django.urls import include, path
+from drf_spectacular.views import (
+    SpectacularAPIView,
+    SpectacularRedocView,
+    SpectacularSwaggerView,
+)
 
 from apps.broadcasts.views import BroadcastImagePresignView
 from apps.evidence.views import EvidencePresignView
@@ -24,6 +29,19 @@ from apps.users.views import ProfilePicturePresignView
 
 urlpatterns = [
     path('admin/', admin.site.urls),
+    # OpenAPI 3 schema + browsable docs (ROADMAP.md Phase 13). /schema/ returns the
+    # raw spec; /docs/ and /redoc/ are the two HTML explorers over it.
+    path('api/v1/schema/', SpectacularAPIView.as_view(), name='schema'),
+    path(
+        'api/v1/docs/',
+        SpectacularSwaggerView.as_view(url_name='schema'),
+        name='swagger-ui',
+    ),
+    path(
+        'api/v1/redoc/',
+        SpectacularRedocView.as_view(url_name='schema'),
+        name='redoc',
+    ),
     path('api/v1/auth/', include('apps.auth.urls')),
     path('api/v1/tasks/', include('apps.tasks.urls')),
     # Comments/Evidence nest under the same /tasks/ prefix but live in their own

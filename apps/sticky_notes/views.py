@@ -1,3 +1,4 @@
+from drf_spectacular.utils import extend_schema
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
@@ -13,6 +14,8 @@ from apps.sticky_notes.services import StickyNoteService
 
 
 class StickyNoteListCreateView(APIView):
+    # Distinct operationId so it doesn't collide with StickyNoteDetailView's GET.
+    @extend_schema(operation_id="sticky_notes_list")
     def get(self, request):
         qs = StickyNoteService.list_notes(request.user)
 

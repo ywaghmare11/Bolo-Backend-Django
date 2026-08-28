@@ -1,0 +1,72 @@
+# Local full-stack run: web + celery worker + celery beat + postgres + redis.
+# All four Python services share one image (built once) and differ only by command.
+#
+#   cp .env.docker.example .env.docker && docker compose up --build
+#   API on http://localhost:8000  (docs at /api/v1/docs/)
+#
+# This uses config.settings.dev (DEBUG, plain HTTP). Production runs the same
+# image with DJANGO_SETTINGS_MODULE=config.settings.prod behind a TLS-terminating
+# load balancer -- see docs/ops/deployment-django.md.
+
+x-app: &app
+  build: .
+  image: bolo-backend:local
+  env_file: .env.docker
+  environment:
+    DJANGO_SETTINGS_MODULE: config.settings.dev
+  depends_on:
+    db:
+      condition: service_healthy
+    redis:
+      condition: service_healthy
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: bolo_django
+      POSTGRES_PASSWORD: bolo_django
+      POSTGRES_DB: bolo_django
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U bolo_django"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    ports:
+      - "5432:5432"
+
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    ports:
+      - "6379:6379"
+
+  web:
+    <<: *app
+    environment:
+      DJANGO_SETTINGS_MODULE: config.settings.dev
+      # Only the web container applies migrations on boot -- worker/beat must not race it.
+      RUN_MIGRATIONS: "1"
+    command: gunicorn config.wsgi:application -c docker/gunicorn.conf.py
+    ports:
+      - "8000:8000"
+
+  worker:
+    <<: *app
+    command: celery -A config worker --loglevel=info
+
+  beat:
+    <<: *app
+    # --schedule points beat's "last run" cache at a writable path. It's only a
+    # cache -- every scheduled sweep in this project is idempotent, so losing it
+    # on a restart at worst re-fires one tick early.
+    command: celery -A config beat --loglevel=info --schedule /tmp/celerybeat-schedule
+
+volumes:
+  pgdata:

@@ -1,4 +1,5 @@
 from django.http import StreamingHttpResponse
+from drf_spectacular.utils import extend_schema
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
@@ -29,6 +30,8 @@ def _parse_bool(value, default=False):
 
 
 class TaskListCreateView(APIView):
+    # Distinct operationId so it doesn't collide with TaskDetailView's GET.
+    @extend_schema(operation_id="tasks_list")
     def get(self, request):
         view = request.query_params.get("view")
         label_id = request.query_params.get("labelId") or None

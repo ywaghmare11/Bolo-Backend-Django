@@ -1,0 +1,84 @@
+name: Deploy (AWS ECS Fargate)
+
+# REFERENCE / DISABLED. `workflow_dispatch` only -- it never runs automatically and
+# is inert until the secrets/vars below exist. It documents the intended path from
+# a merged commit to running containers on AWS ECS Fargate. Full walkthrough:
+# docs/ops/deployment-django.md.
+#
+# To make this live:
+#   1. Create the AWS side: ECR repo, ECS cluster + service, RDS Postgres,
+#      ElastiCache Redis, an IAM role GitHub can assume via OIDC.
+#   2. Add repo secrets: AWS_DEPLOY_ROLE_ARN
+#   3. Add repo vars: AWS_REGION, ECR_REPOSITORY, ECS_CLUSTER, ECS_SERVICE,
+#      ECS_TASK_FAMILY, CONTAINER_NAME
+#   4. Change the trigger to `push: branches: [main]` and delete this banner.
+
+on:
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: "Image tag to deploy (defaults to the commit SHA)"
+        required: false
+
+permissions:
+  id-token: write   # required for the GitHub -> AWS OIDC token exchange
+  contents: read
+
+jobs:
+  deploy:
+    if: ${{ vars.AWS_REGION != '' }}   # stays skipped until the vars are configured
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # --- Authenticate to AWS with a short-lived OIDC token, no static keys ---
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - uses: aws-actions/amazon-ecr-login@v2
+        id: ecr
+
+      # --- Build the image and push it to ECR, tagged with the commit SHA ---
+      - name: Build and push
+        id: build
+        env:
+          REGISTRY: ${{ steps.ecr.outputs.registry }}
+          REPO: ${{ vars.ECR_REPOSITORY }}
+          TAG: ${{ github.event.inputs.image_tag || github.sha }}
+        run: |
+          docker build -t "$REGISTRY/$REPO:$TAG" -t "$REGISTRY/$REPO:latest" .
+          docker push "$REGISTRY/$REPO:$TAG"
+          docker push "$REGISTRY/$REPO:latest"
+          echo "image=$REGISTRY/$REPO:$TAG" >> "$GITHUB_OUTPUT"
+
+      # --- Run migrations as a one-off task BEFORE the rolling deploy ---
+      # Migrations must be backward-compatible (the old code keeps serving during
+      # the rollout) -- see the "expand / contract" section of the deploy doc.
+      - name: Run migrations (one-off ECS task)
+        run: |
+          aws ecs run-task \
+            --cluster "${{ vars.ECS_CLUSTER }}" \
+            --task-definition "${{ vars.ECS_TASK_FAMILY }}-migrate" \
+            --launch-type FARGATE \
+            --network-configuration "awsvpcConfiguration={subnets=[${{ vars.PRIVATE_SUBNETS }}],securityGroups=[${{ vars.SERVICE_SG }}]}" \
+            --overrides '{"containerOverrides":[{"name":"${{ vars.CONTAINER_NAME }}","command":["python","manage.py","migrate","--noinput"]}]}'
+
+      # --- Point the service at a new task-definition revision with the new image;
+      #     ECS then does a rolling replace (start new, health-check, drain old) ---
+      - name: Render new task definition
+        id: taskdef
+        uses: aws-actions/amazon-ecs-render-task-definition@v1
+        with:
+          task-definition-family: ${{ vars.ECS_TASK_FAMILY }}
+          container-name: ${{ vars.CONTAINER_NAME }}
+          image: ${{ steps.build.outputs.image }}
+
+      - name: Deploy to ECS and wait for stable
+        uses: aws-actions/amazon-ecs-deploy-task-definition@v2
+        with:
+          task-definition: ${{ steps.taskdef.outputs.task-definition }}
+          cluster: ${{ vars.ECS_CLUSTER }}
+          service: ${{ vars.ECS_SERVICE }}
+          wait-for-service-stability: true

@@ -1,4 +1,4 @@
-Django==6.0.7
+Django==6.0.8
 djangorestframework==3.17.1
 djangorestframework-simplejwt==5.5.1
 psycopg[binary]==3.3.4
@@ -35,3 +35,9 @@ django-cors-headers==4.9.0
 # Structured JSON logging with request-id/tenant-id/actor-id correlation
 # (ROADMAP.md Phase 10, guidelines.md's Logging section) -- config/settings/base.py.
 structlog==26.1.0
+# OpenAPI 3 schema generated from the DRF views + a Swagger UI / ReDoc browser
+# (ROADMAP.md Phase 13). The -sidecar package vendors the Swagger/ReDoc JS+CSS as
+# static files so the docs pages don't depend on an external CDN at runtime --
+# served by WhiteNoise in the container (see requirements/prod.txt).
+drf-spectacular==0.28.0
+drf-spectacular-sidecar==2025.7.1

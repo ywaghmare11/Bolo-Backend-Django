@@ -170,6 +170,8 @@ Each phase ends with a **"talking points"** line — memorize these, they're the
 
 **Talking point:** `makemigrations --check` in CI — a cheap gate that catches "forgot to commit a migration" before it becomes a production incident.
 
+**Built 2026-08-28** (`feature/docker-ci-apidocs`) — multi-stage `Dockerfile` (non-root, static baked in) + `docker-compose.yml` (web/worker/beat/db/redis, verified `up --wait` on a real daemon). CI `.github/workflows/ci.yml`: `ruff`, `pytest`+`makemigrations --check` against real Postgres/Redis, `pip-audit` (caught a real Django CVE → bumped to 6.0.8), and a Docker build + `check --deploy`. CD `.github/workflows/deploy.yml` committed **disabled** — reference AWS ECS Fargate path (OIDC → ECR → one-off migrate task → rolling service update). `drf-spectacular` (+ sidecar, no CDN) at `/api/v1/schema/` · `/docs/` · `/redoc/`. The full step-by-step deploy/CI-CD writeup is in **`docs/ops/deployment-django.md`** (this project's own runbook, not the inherited Node one). Full breakdown in `changelog.md`'s 2026-08-28 entry.
+
 ---
 
 ## Phase 14 — Interview cheat-sheet

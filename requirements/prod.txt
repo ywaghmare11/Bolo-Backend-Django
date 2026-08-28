@@ -1,3 +1,8 @@
 -r base.txt
 
 gunicorn==26.0.0
+# Serves collected static files (Django admin CSS/JS, the Swagger UI / ReDoc
+# assets) straight from the gunicorn process, so the container needs no separate
+# nginx sidecar in front of it. Only wired into config/settings/prod.py -- the dev
+# server (`runserver`) serves static on its own.
+whitenoise==6.9.0

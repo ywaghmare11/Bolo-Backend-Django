@@ -39,6 +39,7 @@
 - [x] **No self-registration** — there is no `POST` equivalent to create a `PlatformAdmin` via the API. The only way a row is created is `scripts/seedPlatformAdmin.ts`, run manually by ops. This is a deliberate gap, not an oversight: nobody should be able to grant themselves platform-admin access over the network.
 - [x] `POST /onboard/register` (the old public, no-auth tenant-registration endpoint) is **removed** — tenant creation now requires `requirePlatformAdmin`, closing what had been "the only public write endpoint in the system."
 - [x] Every platform-admin action (tenant creation, member add, member remove) writes an `AuditLog` row (`actorType: PLATFORM_ADMIN`, `actorId: null` — a `PlatformAdmin` isn't a `User` row, so its identity lives in `metadata` instead).
+  - **bolo-backend-django (Phase 15b, 2026-08-29):** built. `apps/common/audit_middleware.py` grew a second actor-resolution path — a route with `actor: "platform_admin"` in `AUDIT_ROUTE_CONFIG` is attributed from the `admin_token` cookie (`decode_admin_cookie`), not the tenant-user `token` cookie: `actor_type = PLATFORM_ADMIN`, `actor_id = None`, `metadata = { platformAdminId, platformAdminEmail }`. `AuditLog.tenant` (required) is resolved from the target tenant — the `:tenantId` path kwarg for member add/remove, the response body for create-tenant. `TENANT_CREATED` / `MEMBER_ADDED` / `MEMBER_REMOVED` wired; `MEMBERS_BULK_IMPORTED` waits on Phase 15c. No service/view calls the audit layer — the generic-observer discipline holds.
 
 ---
 

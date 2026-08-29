@@ -1,5 +1,6 @@
 from django.db import models
 
+from apps.common.enums import PlatformAdminRole
 from apps.common.models import CreatedOnlyModel, TimestampedModel
 
 
@@ -10,6 +11,17 @@ class PlatformAdmin(TimestampedModel):
 
     name = models.CharField(max_length=255)
     email = models.EmailField(unique=True)
+
+    # RBAC tier within the operator team. Carried in the admin_token JWT (see
+    # apps/platform_admin/tokens.py) so no per-request DB read is needed to
+    # authorize -- same pattern as a tenant user's roleLevel claim. Only
+    # SUPER_ADMIN exists today; see PlatformAdminRole for why it's still an enum.
+    # bolo-backend-django addition -- upstream's PlatformAdmin has no role field.
+    role = models.CharField(
+        max_length=32,
+        choices=PlatformAdminRole.choices,
+        default=PlatformAdminRole.SUPER_ADMIN,
+    )
 
     # Not Django's contrib.auth model, same shim as users.User -- these two
     # attributes are the minimal interface DRF's IsAuthenticated permission

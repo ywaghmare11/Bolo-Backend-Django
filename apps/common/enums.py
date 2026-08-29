@@ -12,6 +12,18 @@ class OrgRoleLevel(models.TextChoices):
     EXECUTOR = "EXECUTOR", "Executor"
 
 
+class PlatformAdminRole(models.TextChoices):
+    """RBAC tier for a PlatformAdmin (the operator team that onboards tenants).
+    One tier up from OrgRoleLevel and a completely separate axis. Only
+    SUPER_ADMIN exists today -- SUPPORT_ADMIN / VIEWER are deliberately deferred
+    until there's a real need to split access inside the operator team
+    (ROADMAP.md Phase 15a). The HasPlatformAdminRole([...]) factory is built now
+    so adding one later is a one-line change per protected view, not a refactor.
+    """
+
+    SUPER_ADMIN = "SUPER_ADMIN", "Super Admin"
+
+
 class Language(models.TextChoices):
     EN = "EN", "English"
     HI = "HI", "Hindi"

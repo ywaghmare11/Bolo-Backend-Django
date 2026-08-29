@@ -75,7 +75,7 @@ class TestDecodeAccessCookieCrossAuthSpace:
         from apps.platform_admin.tokens import issue_admin_access_token
 
         admin = PlatformAdmin.objects.create(name="Ops Admin", email="admin@bolo.internal")
-        admin_token = issue_admin_access_token(admin.id, admin.email)
+        admin_token = issue_admin_access_token(admin.id, admin.email, admin.role)
 
         class _FakeRequest:
             COOKIES = {"token": admin_token}
@@ -88,7 +88,7 @@ class TestDecodeAccessCookieCrossAuthSpace:
 
         admin = PlatformAdmin.objects.create(name="Ops Admin", email="admin2@bolo.internal")
         client = _authed_client(alice, tenant.id)
-        client.cookies["token"] = issue_admin_access_token(admin.id, admin.email)
+        client.cookies["token"] = issue_admin_access_token(admin.id, admin.email, admin.role)
 
         with capture_logs() as cap:
             resp = client.get("/api/v1/tasks/")

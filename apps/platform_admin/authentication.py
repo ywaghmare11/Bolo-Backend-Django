@@ -32,6 +32,12 @@ class PlatformAdminCookieJWTAuthentication(BaseAuthentication):
         except NotFoundError as exc:
             raise exceptions.AuthenticationFailed("Platform admin not found") from exc
 
+        # RBAC tier for HasPlatformAdminRole -- mirrors how CookieJWTAuthentication
+        # sets request.role_level for tenant users. Prefer the JWT claim (no extra
+        # work); fall back to the just-loaded row for admin_token cookies minted
+        # before the `role` claim existed (7-day lifetime, so they linger).
+        request.platform_admin_role = token.get("role") or admin.role
+
         return (admin, token)
 
     def authenticate_header(self, request):

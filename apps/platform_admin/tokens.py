@@ -14,7 +14,7 @@ ADMIN_COOKIE_NAME = "admin_token"
 ADMIN_TOKEN_LIFETIME_DAYS = 7
 
 
-def issue_admin_access_token(admin_id: str, email: str) -> str:
+def issue_admin_access_token(admin_id: str, email: str, role: str) -> str:
     token = AccessToken()
     token.set_exp(lifetime=timedelta(days=ADMIN_TOKEN_LIFETIME_DAYS))
     token["adminId"] = str(admin_id)
@@ -22,6 +22,10 @@ def issue_admin_access_token(admin_id: str, email: str) -> str:
     # No tenantId/roleLevel at all -- so a tenant-user token can never be
     # mistaken for (or pass validation as) an admin token, and vice versa.
     token["isPlatformAdmin"] = True
+    # PlatformAdmin RBAC tier (PlatformAdminRole). Read on every request by
+    # HasPlatformAdminRole so authorization needs no DB round-trip -- the same
+    # role_level-in-the-JWT pattern the tenant-user auth uses.
+    token["role"] = role
     return str(token)
 
 

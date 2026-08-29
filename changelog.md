@@ -5,6 +5,16 @@
 
 ---
 
+## 2026-08-29 (7)
+
+- `[BE]` `[INFRA]` **Phase 15d — backend prep for the admin console SPA** (`GET /platform-admin/auth/me` + dev CORS). Branch `feature/platform-admin-auth-me` off `main` (15c + 15e merged first). This is the *only* backend work Phase 15d needs — the SPA itself is a separate standalone repo (`bolo-admin-console`, Vite + React + TS + Tailwind + TanStack Query, own `git init`), built next.
+  - **`GET /platform-admin/auth/me`** — new `PlatformAdminMeView`, reads the `admin_token` cookie via `PlatformAdminCookieJWTAuthentication`, returns `{ adminId, name, email, role }` or `401`. Not role-gated (like logout — any authenticated admin reads their own identity). The SPA's route guard calls it once on load: `200` → render, `401` → `/login`; a global fetch interceptor handles `401` from any later call the same way.
+  - New `serialize_admin_identity(admin)` helper — used by the new endpoint **and** `verify-otp`, whose response now also carries `role` (additive; lets the SPA get the identity on login without a second call). `api-spec.md` §22 updated for both.
+  - **Dev CORS** — `config/settings/dev.py` `CORS_ALLOWED_ORIGINS` gains `http://localhost:5174` / `http://127.0.0.1:5174` (the console's Vite port; `bolo-web` keeps 5173). `CORS_ALLOW_CREDENTIALS` was already `True`. `SameSite=Lax` on `admin_token` is fine — `localhost:5174` and `localhost:8000` are the same site (same registrable domain, different ports). `dev.py` only — prod is same-origin, no CORS.
+  - Not audited (GET). 4 new tests (`apps/platform_admin/tests/test_platform_admin_auth.py::TestPlatformAdminMe`, **415 total, all green**): identity shape for an authenticated admin, `401` with no cookie, `401` for a wrong-auth-space (tenant `token`) cookie — not `500`, `role` now in the verify-otp response. `ruff` / `manage.py check` / `makemigrations --check` clean (no schema change). Not pushed/merged — committed locally on the branch for review.
+
+---
+
 ## 2026-08-29 (6)
 
 - `[BE]` **Phase 15e — tenant offboarding (suspend / reactivate)**, `ROADMAP.md` Phase 15. Branch `feature/tenant-offboarding` off `feature/platform-admin-bulk-import` (stacked on 15c — merge order is 15c → 15e). Added because 15a–15c could create + populate tenants but had no way to **offboard** one when a customer stops paying or leaves BOLO. Deliberately **suspend/reactivate only** — no hard-delete, since `AuditLog.tenant` (and every tenant FK) is `on_delete=PROTECT` and the CA/CS audit trail is a compliance requirement (W63); a real purge is a separate export-first step (W58's archive → hand-back → delete), not built.

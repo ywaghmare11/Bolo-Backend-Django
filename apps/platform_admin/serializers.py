@@ -78,3 +78,14 @@ def serialize_tenant_detail(tenant) -> dict:
 
 def serialize_added_member(user) -> dict:
     return {"userId": str(user.id), "email": user.email}
+
+
+def serialize_admin_identity(admin) -> dict:
+    """The PlatformAdmin's own identity -- returned by verify-otp and GET
+    /platform-admin/auth/me (the SPA route guard's session check, Phase 15d)."""
+    return {
+        "adminId": str(admin.id),
+        "name": admin.name,
+        "email": admin.email,
+        "role": admin.role,
+    }

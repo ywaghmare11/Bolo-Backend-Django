@@ -2390,7 +2390,7 @@ Dedup within the file is case-insensitive (last row wins; earlier duplicate rows
 
 ---
 
-## 22. Platform Admin (Superadmin) *(upstream built 2026-07-15, W35/W98 resolved — core CRUD built here 2026-08-23: OTP auth, create/list tenant, add/remove member. RBAC (`PlatformAdmin.role` + `HasPlatformAdminRole`) built 2026-08-29 (Phase 15a); `AuditLog` wiring for `TENANT_CREATED`/`MEMBER_ADDED`/`MEMBER_REMOVED` built 2026-08-29 (Phase 15b); `.xlsx`/`.csv`/`.json` member bulk-import ETL + `MEMBERS_BULK_IMPORTED` audit built 2026-08-29 (Phase 15c); tenant suspend/reactivate offboarding (`PATCH .../tenants/:id`, `TENANT_SUSPENDED`/`TENANT_REACTIVATED`) built 2026-08-29 (Phase 15e). **Deferred, explicitly not built:** the standalone admin console SPA (Phase 15d), and a hard tenant purge (export-first, W58) — see CLAUDE.md)*
+## 22. Platform Admin (Superadmin) *(upstream built 2026-07-15, W35/W98 resolved — core CRUD built here 2026-08-23: OTP auth, create/list tenant, add/remove member. RBAC (`PlatformAdmin.role` + `HasPlatformAdminRole`) built 2026-08-29 (Phase 15a); `AuditLog` wiring for `TENANT_CREATED`/`MEMBER_ADDED`/`MEMBER_REMOVED` built 2026-08-29 (Phase 15b); `.xlsx`/`.csv`/`.json` member bulk-import ETL + `MEMBERS_BULK_IMPORTED` audit built 2026-08-29 (Phase 15c); tenant suspend/reactivate offboarding (`PATCH .../tenants/:id`, `TENANT_SUSPENDED`/`TENANT_REACTIVATED`) built 2026-08-29 (Phase 15e); `GET /platform-admin/auth/me` for the SPA session check built 2026-08-29 (Phase 15d backend prep). **Deferred:** the standalone admin console SPA itself (Phase 15d, separate `bolo-admin-console` repo), and a hard tenant purge (export-first, W58) — see CLAUDE.md)*
 
 A `PlatformAdmin` is a cross-tenant actor, outside `Tenant`/RLS scoping entirely — not a `User`, not a `TenantMembership` role. It registers new tenants and can add/remove users in **any** tenant. No self-registration: rows are provisioned only via an ops-run seed script. See `docs/architecture/domain-model.md`'s "PlatformAdmin" section for the model shape.
 
@@ -2420,14 +2420,29 @@ Request: { "email": "admin@bolo.internal", "otp": "482910" }
 
 Response 200:
 {
-  "data": { "adminId": "PAD00001", "name": "Ops Admin", "email": "admin@bolo.internal" },
+  "data": { "adminId": "PAD00001", "name": "Ops Admin", "email": "admin@bolo.internal", "role": "SUPER_ADMIN" },
   "message": "Login successful"
 }
 
 Set-Cookie: admin_token=<jwt>; HttpOnly; SameSite=Lax; Path=/; Max-Age=604800
 ```
 
+(`role` added to the response 2026-08-29, Phase 15d — `PlatformAdminRole`, `SUPER_ADMIN` only today.)
+
 **Errors:** 400 `INVALID_OTP` (includes `data.attemptsRemaining`) · 400 `OTP_EXPIRED` · 429 (locked 15 min)
+
+---
+
+### GET /platform-admin/auth/me *(built here 2026-08-29, ROADMAP.md Phase 15d — no upstream equivalent)*
+
+Session check for the standalone admin console SPA: its top-level route guard calls this once on load — `200` renders the app, `401` redirects to `/login`. Reads the `admin_token` cookie; not role-gated (any authenticated admin can read their own identity).
+
+```json
+Response 200:
+{ "data": { "adminId": "PAD00001", "name": "Ops Admin", "email": "admin@bolo.internal", "role": "SUPER_ADMIN" }, "message": "OK" }
+```
+
+**Errors:** 401 (no / invalid / wrong-auth-space cookie)
 
 ---
 

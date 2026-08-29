@@ -12,6 +12,7 @@ from apps.platform_admin.serializers import (
     CreateTenantSerializer,
     UpdateTenantSerializer,
     serialize_added_member,
+    serialize_admin_identity,
     serialize_tenant_created,
     serialize_tenant_detail,
     serialize_tenant_list_item,
@@ -46,12 +47,22 @@ class PlatformAdminVerifyOtpView(APIView):
         )
         admin = result["admin"]
 
-        response = success_response(
-            {"adminId": str(admin.id), "name": admin.name, "email": admin.email},
-            "Login successful",
-        )
+        response = success_response(serialize_admin_identity(admin), "Login successful")
         set_admin_auth_cookie(response, result["access_token"])
         return response
+
+
+class PlatformAdminMeView(APIView):
+    """GET /platform-admin/auth/me -- the standalone admin console (Phase 15d)
+    calls this once on load from its route guard: 200 -> render, 401 -> /login.
+    Not role-gated (like logout): any authenticated admin can read their own
+    identity."""
+
+    authentication_classes = [PlatformAdminCookieJWTAuthentication]
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        return success_response(serialize_admin_identity(request.user), "OK")
 
 
 class PlatformAdminLogoutView(APIView):

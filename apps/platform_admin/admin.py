@@ -5,7 +5,8 @@ from .models import PlatformAdmin, PlatformAdminOtpCode
 
 @admin.register(PlatformAdmin)
 class PlatformAdminAdmin(admin.ModelAdmin):
-    list_display = ("id", "name", "email", "created_at")
+    list_display = ("id", "name", "email", "role", "created_at")
+    list_filter = ("role",)
     search_fields = ("name", "email")
 
 

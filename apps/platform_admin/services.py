@@ -84,7 +84,7 @@ class PlatformAdminAuthService:
 
         admin = PlatformAdminRepository.get_by_email(email)
         PlatformAdminOtpRepository.delete_by_email(email)
-        access_token = issue_admin_access_token(admin.id, admin.email)
+        access_token = issue_admin_access_token(admin.id, admin.email, admin.role)
         return {"admin": admin, "access_token": access_token}
 
 

@@ -17,7 +17,7 @@ def admin():
 
 def _authed_client(admin):
     client = APIClient()
-    client.cookies["admin_token"] = issue_admin_access_token(admin.id, admin.email)
+    client.cookies["admin_token"] = issue_admin_access_token(admin.id, admin.email, admin.role)
     return client
 
 

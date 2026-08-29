@@ -2,7 +2,8 @@ from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
 
 from apps.auth.serializers import RequestOtpSerializer, VerifyOtpSerializer
-from apps.common.permissions import AllowAny, IsAuthenticated
+from apps.common.enums import PlatformAdminRole
+from apps.common.permissions import AllowAny, HasPlatformAdminRole, IsAuthenticated
 from apps.common.responses import success_response
 from apps.platform_admin.authentication import PlatformAdminCookieJWTAuthentication
 from apps.platform_admin.serializers import (
@@ -55,6 +56,8 @@ class PlatformAdminLogoutView(APIView):
     see apps/platform_admin/tokens.py. Clearing the cookie is the whole thing."""
 
     authentication_classes = [PlatformAdminCookieJWTAuthentication]
+    # Not role-gated on purpose: any authenticated admin (whatever their
+    # PlatformAdminRole) must be able to end their own session.
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
@@ -65,7 +68,7 @@ class PlatformAdminLogoutView(APIView):
 
 class PlatformAdminTenantListCreateView(APIView):
     authentication_classes = [PlatformAdminCookieJWTAuthentication]
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, HasPlatformAdminRole([PlatformAdminRole.SUPER_ADMIN])]
 
     def get(self, request):
         tenants = PlatformAdminTenantService.list_tenants()
@@ -92,7 +95,7 @@ class PlatformAdminTenantListCreateView(APIView):
 
 class PlatformAdminTenantMembersView(APIView):
     authentication_classes = [PlatformAdminCookieJWTAuthentication]
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, HasPlatformAdminRole([PlatformAdminRole.SUPER_ADMIN])]
 
     def post(self, request, tenant_id):
         serializer = AddMemberSerializer(data=request.data)
@@ -113,7 +116,7 @@ class PlatformAdminTenantMembersView(APIView):
 
 class PlatformAdminTenantMemberDetailView(APIView):
     authentication_classes = [PlatformAdminCookieJWTAuthentication]
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, HasPlatformAdminRole([PlatformAdminRole.SUPER_ADMIN])]
 
     def delete(self, request, tenant_id, user_id):
         PlatformAdminTenantService.remove_member(tenant_id, user_id)

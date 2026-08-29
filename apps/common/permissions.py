@@ -1,6 +1,12 @@
 from rest_framework.permissions import AllowAny, BasePermission, IsAuthenticated
 
-__all__ = ["IsAuthenticated", "AllowAny", "IsTenantMember", "HasOrgRole"]
+__all__ = [
+    "IsAuthenticated",
+    "AllowAny",
+    "IsTenantMember",
+    "HasOrgRole",
+    "HasPlatformAdminRole",
+]
 
 
 class IsTenantMember(BasePermission):
@@ -29,3 +35,23 @@ def HasOrgRole(allowed_role_levels):
             return getattr(request, "role_level", None) in allowed_role_levels
 
     return _HasOrgRole
+
+
+def HasPlatformAdminRole(allowed_roles):
+    """DRF permission-class factory for the PlatformAdmin (operator) auth space
+    -- one tier up from HasOrgRole and structurally identical. Its own axis:
+    request.platform_admin_role is set by PlatformAdminCookieJWTAuthentication
+    (from the JWT `role` claim, falling back to the PlatformAdmin row for tokens
+    minted before that claim existed), never by CookieJWTAuthentication.
+
+    Usage: permission_classes = [IsAuthenticated, HasPlatformAdminRole(["SUPER_ADMIN"])]
+
+    Only SUPER_ADMIN exists today (see PlatformAdminRole); the factory shape is
+    here so a second role is a one-line change per view rather than a refactor.
+    """
+
+    class _HasPlatformAdminRole(BasePermission):
+        def has_permission(self, request, view):
+            return getattr(request, "platform_admin_role", None) in allowed_roles
+
+    return _HasPlatformAdminRole

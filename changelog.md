@@ -5,6 +5,19 @@
 
 ---
 
+## 2026-08-29 (3)
+
+- `[BE]` **Phase 15a — RBAC on `PlatformAdmin`**, `ROADMAP.md` Phase 15 (Platform Admin Console), first slice. Branch `feature/platform-admin-rbac` off `main` (Phase 14 + the deployment-pipeline `2026-08-29 (2)` entry merged first). Built one slice at a time per user direction — 15b (audit-log wiring for admin actions), 15c (bulk-import ETL), 15d (standalone React console) are separate follow-up passes.
+  - **`PlatformAdmin.role`** — new `PlatformAdminRole` enum in `apps/common/enums.py`, **`SUPER_ADMIN` only** for now (explicit ROADMAP decision — `SUPPORT_ADMIN`/`VIEWER` deferred until the operator team actually needs to split access). New `CharField` on `PlatformAdmin` (`max_length=32`, `default=SUPER_ADMIN`), migration `0002_platformadmin_role` — NOT NULL with a default so existing rows backfill cleanly. A **bolo-backend-django addition** — upstream's `PlatformAdmin` has no role field, flagged as such in `domain-model.md`/`api-spec.md` §22/`security.md` the same way as the access+refresh-token deviation.
+  - **`HasPlatformAdminRole([...])`** (`apps/common/permissions.py`) — a permission-class factory **structurally identical to the existing `HasOrgRole`**, one auth tier up and on its own axis: it reads `request.platform_admin_role`, never `request.role_level`. Built as a factory now (even with one role) so a second role later is a one-line change per view, not a refactor.
+  - **`role` carried in the `admin_token` JWT** (`issue_admin_access_token` gained a required `role` param; payload is now `{ adminId, email, isPlatformAdmin, role }`) — authorization needs no per-request DB read, same pattern as a tenant user's `roleLevel` claim. `PlatformAdminCookieJWTAuthentication` sets `request.platform_admin_role = token.get("role") or admin.role` — the `admin` row is already loaded there, so the fallback for 7-day `admin_token`s minted before the claim existed costs nothing.
+  - **Wired into the 3 tenant-management endpoints** (`POST`/`GET /platform-admin/tenants`, `POST`/`DELETE /platform-admin/tenants/:id/members[/:userId]`) as `permission_classes = [IsAuthenticated, HasPlatformAdminRole([SUPER_ADMIN])]`. An authenticated admin whose role is outside the allow-list now gets `403`, not `401`. `POST /platform-admin/auth/logout` deliberately left `IsAuthenticated`-only (any admin can end their own session). No behaviour change today — there's only one role — but the gate is real and tested.
+  - `seed_platform_admin` gained an optional `--role` (choices from the enum, default `SUPER_ADMIN`); Django admin `list_display`/`list_filter` gained `role`.
+  - Three existing `issue_admin_access_token(id, email)` test call sites updated to pass `admin.role` (2 in `test_logging_middleware.py`, 1 in `test_platform_admin_tenants.py`).
+  - 14 new tests (`apps/platform_admin/tests/test_platform_admin_rbac.py`, **355 total, all green**): the factory in isolation (match/mismatch/`None`/attribute-absent/multi-role allow-list), `role` defaulting + riding in the JWT with tenant claims still absent, and end-to-end enforcement (super-admin passes list + create, unknown-role → `403` on every management endpoint, legacy no-`role`-claim token falls back to the DB column, logout not gated, no-token still `401`). `ruff check .` / `manage.py check` / `makemigrations --check` all clean.
+
+---
+
 ## 2026-08-29 (2)
 
 - `[STD]` `[INFRA]` **Deployment pipeline: staging → approval → production promotion** — the two deployment-pipeline refinements that were scoped into `ROADMAP.md` Phase 14 but never shipped with it (the 2026-08-29 Phase 14 entry below was `INTERVIEW_NOTES.md` only, "zero code touched"). Branch `chore/deploy-pipeline-promotion` off `main` (Phase 14 merged first). **Docs + workflow YAML only — no app code, 341 tests unchanged.**

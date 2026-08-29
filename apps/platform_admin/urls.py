@@ -3,6 +3,7 @@ from django.urls import path
 from apps.platform_admin.views import (
     PlatformAdminLogoutView,
     PlatformAdminMemberImportView,
+    PlatformAdminMeView,
     PlatformAdminRequestOtpView,
     PlatformAdminTenantDetailView,
     PlatformAdminTenantListCreateView,
@@ -14,6 +15,7 @@ from apps.platform_admin.views import (
 urlpatterns = [
     path("auth/request-otp/", PlatformAdminRequestOtpView.as_view(), name="platform-admin-request-otp"),
     path("auth/verify-otp/", PlatformAdminVerifyOtpView.as_view(), name="platform-admin-verify-otp"),
+    path("auth/me/", PlatformAdminMeView.as_view(), name="platform-admin-me"),
     path("auth/logout/", PlatformAdminLogoutView.as_view(), name="platform-admin-logout"),
     path("tenants/", PlatformAdminTenantListCreateView.as_view(), name="platform-admin-tenants"),
     path(

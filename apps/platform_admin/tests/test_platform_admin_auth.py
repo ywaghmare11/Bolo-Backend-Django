@@ -114,3 +114,57 @@ class TestPlatformAdminLogout:
         resp = client.post("/api/v1/platform-admin/auth/logout/")
         assert resp.status_code == 200
         assert client.cookies["admin_token"].value == ""
+
+
+@pytest.mark.django_db
+class TestPlatformAdminMe:
+    """GET /platform-admin/auth/me -- the admin console's session check (Phase 15d)."""
+
+    def _login(self, client, admin):
+        client.post("/api/v1/platform-admin/auth/request-otp/", {"email": admin.email}, format="json")
+        code = _otp_code_from_outbox()
+        client.post(
+            "/api/v1/platform-admin/auth/verify-otp/", {"email": admin.email, "otp": code}, format="json",
+        )
+
+    def test_returns_identity_for_authenticated_admin(self, admin):
+        client = APIClient()
+        self._login(client, admin)
+
+        resp = client.get("/api/v1/platform-admin/auth/me/")
+        assert resp.status_code == 200
+        assert resp.data["data"] == {
+            "adminId": str(admin.id),
+            "name": "Ops Admin",
+            "email": "admin@bolo.internal",
+            "role": "SUPER_ADMIN",
+        }
+
+    def test_401_without_cookie(self):
+        resp = APIClient().get("/api/v1/platform-admin/auth/me/")
+        assert resp.status_code == 401
+
+    def test_401_for_a_tenant_user_token(self, admin):
+        """A validly-signed tenant `token` cookie is the wrong auth space -- 401, not 500."""
+        from apps.auth.tokens import issue_access_token
+        from apps.tenants.factories import TenantFactory
+        from apps.users.factories import UserFactory
+
+        tenant = TenantFactory()
+        user = UserFactory(tenant=tenant)
+        client = APIClient()
+        client.cookies["admin_token"] = issue_access_token(user.id, tenant.id, "MID")
+
+        resp = client.get("/api/v1/platform-admin/auth/me/")
+        assert resp.status_code == 401
+
+    def test_verify_otp_response_now_includes_role(self, admin):
+        client = APIClient()
+        client.post(
+            "/api/v1/platform-admin/auth/request-otp/", {"email": admin.email}, format="json",
+        )
+        code = _otp_code_from_outbox()
+        resp = client.post(
+            "/api/v1/platform-admin/auth/verify-otp/", {"email": admin.email, "otp": code}, format="json",
+        )
+        assert resp.data["data"]["role"] == "SUPER_ADMIN"

@@ -5,6 +5,16 @@
 
 ---
 
+## 2026-08-30
+
+- `[BE]` **`GET /platform-admin/tenants/:tenantId/members` — list a tenant's members** (Phase 15d backend prep, cont.). Branch `feature/platform-admin-list-members` off `main`. The console's tenant-detail page (Step 3) needs a member table, and the PlatformAdmin surface had no list-members endpoint — only add / remove-by-id / bulk-import. Flagged in `bolo-admin-console/docs/api-contract.md`; now closed.
+  - New `get` method on the existing `PlatformAdminTenantMembersView` (same URL / `platform-admin-tenant-members` name, `SUPER_ADMIN`-gated). `PlatformAdminTenantService.list_members(tenant_id)` → `TenantRepository.get_by_id` (404) then new `MembershipRepository.list_for_tenant` (a QuerySet, `select_related("user", "department")`, `order_by("user__name", "user__email")`). Paginated via the project's `BoloPageNumberPagination` (`{page, limit, total}` envelope, default 20 / max 100 — a college roster can be 100s).
+  - New `serialize_member(m)` → `{ userId, name, email, roleLevel, roleLabel, departmentName, canBroadcast, joinedAt }` (`TenantMembership.joined_at` already exists via `auto_now_add`). Read-only — **not audited** (GET), same as the tenant list.
+  - **No schema change.** Docs: `api-spec.md` §22 (new section + heading note); `bolo-admin-console/docs/api-contract.md` + its `CLAUDE.md` Step 3 note updated in the console repo (the "no list-members endpoint" fork is resolved — Step 3 can now ship the full member table).
+  - 6 new tests (`apps/platform_admin/tests/test_platform_admin_tenants.py::TestListMembers`, **421 total, all green**): row shape incl. department + `joinedAt`, cross-tenant isolation, name ordering + pagination (`?limit=2` → `{page:1, limit:2, total:3}`), empty tenant → `data: []`, null department, `404` unknown tenant, `401`. `ruff` / `manage.py check` / `makemigrations --check` clean.
+
+---
+
 ## 2026-08-29 (7)
 
 - `[BE]` `[INFRA]` **Phase 15d — backend prep for the admin console SPA** (`GET /platform-admin/auth/me` + dev CORS). Branch `feature/platform-admin-auth-me` off `main` (15c + 15e merged first). This is the *only* backend work Phase 15d needs — the SPA itself is a separate standalone repo (`bolo-admin-console`, Vite + React + TS + Tailwind + TanStack Query, own `git init`), built next.

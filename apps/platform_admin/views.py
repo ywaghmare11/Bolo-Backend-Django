@@ -1,9 +1,11 @@
+from rest_framework.response import Response
 from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
 
 from apps.auth.serializers import RequestOtpSerializer, VerifyOtpSerializer
 from apps.common.enums import PlatformAdminRole
 from apps.common.exceptions import ValidationError
+from apps.common.pagination import BoloPageNumberPagination
 from apps.common.permissions import AllowAny, HasPlatformAdminRole, IsAuthenticated
 from apps.common.responses import success_response
 from apps.platform_admin.authentication import PlatformAdminCookieJWTAuthentication
@@ -13,6 +15,7 @@ from apps.platform_admin.serializers import (
     UpdateTenantSerializer,
     serialize_added_member,
     serialize_admin_identity,
+    serialize_member,
     serialize_tenant_created,
     serialize_tenant_detail,
     serialize_tenant_list_item,
@@ -129,6 +132,13 @@ class PlatformAdminTenantDetailView(APIView):
 class PlatformAdminTenantMembersView(APIView):
     authentication_classes = [PlatformAdminCookieJWTAuthentication]
     permission_classes = [IsAuthenticated, HasPlatformAdminRole([PlatformAdminRole.SUPER_ADMIN])]
+
+    def get(self, request, tenant_id):
+        qs = PlatformAdminTenantService.list_members(tenant_id)  # 404 if tenant unknown
+        paginator = BoloPageNumberPagination()
+        page = paginator.paginate_queryset(qs, request, view=self)
+        data = [serialize_member(m) for m in page]
+        return Response(paginator.get_paginated_response(data))
 
     def post(self, request, tenant_id):
         serializer = AddMemberSerializer(data=request.data)

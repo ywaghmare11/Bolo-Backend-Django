@@ -80,6 +80,21 @@ def serialize_added_member(user) -> dict:
     return {"userId": str(user.id), "email": user.email}
 
 
+def serialize_member(membership) -> dict:
+    """One row of a tenant's member table (GET .../tenants/:id/members/, Phase 15d).
+    `user` and `department` are select_related'd by MembershipRepository.list_for_tenant."""
+    return {
+        "userId": str(membership.user_id),
+        "name": membership.user.name,
+        "email": membership.user.email,
+        "roleLevel": membership.role_level,
+        "roleLabel": membership.role_label,
+        "departmentName": membership.department.name if membership.department_id else None,
+        "canBroadcast": membership.can_broadcast,
+        "joinedAt": membership.joined_at.isoformat(),
+    }
+
+
 def serialize_admin_identity(admin) -> dict:
     """The PlatformAdmin's own identity -- returned by verify-otp and GET
     /platform-admin/auth/me (the SPA route guard's session check, Phase 15d)."""

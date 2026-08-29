@@ -188,3 +188,75 @@ class TestRemoveMember:
 
         resp = client.delete(f"/api/v1/platform-admin/tenants/{tenant.id}/members/{user.id}/")
         assert resp.status_code == 404
+
+
+@pytest.mark.django_db
+class TestListMembers:
+    def _url(self, tenant_id):
+        return f"/api/v1/platform-admin/tenants/{tenant_id}/members/"
+
+    def test_requires_platform_admin_auth(self):
+        tenant = TenantFactory()
+        resp = APIClient().get(self._url(tenant.id))
+        assert resp.status_code == 401
+
+    def test_lists_only_this_tenants_members_with_shape(self, admin):
+        from apps.tenants.factories import DepartmentFactory
+
+        tenant = TenantFactory()
+        dept = DepartmentFactory(tenant=tenant, name="Physics")
+        TenantMembershipFactory(
+            tenant=tenant,
+            user=UserFactory(tenant=tenant, name="Asha Nair", email="asha@abc.edu"),
+            role_level=OrgRoleLevel.MID,
+            role_label="HoD",
+            department=dept,
+            can_broadcast=True,
+        )
+        # a different tenant's member must not leak in
+        other = TenantFactory()
+        TenantMembershipFactory(tenant=other, user=UserFactory(tenant=other, name="Zztop"))
+
+        resp = _authed_client(admin).get(self._url(tenant.id))
+
+        assert resp.status_code == 200
+        assert resp.data["pagination"]["total"] == 1
+        [row] = resp.data["data"]
+        assert row == {
+            "userId": str(TenantMembership.objects.get(tenant=tenant).user_id),
+            "name": "Asha Nair",
+            "email": "asha@abc.edu",
+            "roleLevel": OrgRoleLevel.MID,
+            "roleLabel": "HoD",
+            "departmentName": "Physics",
+            "canBroadcast": True,
+            "joinedAt": TenantMembership.objects.get(tenant=tenant).joined_at.isoformat(),
+        }
+
+    def test_ordered_by_name_and_paginated(self, admin):
+        tenant = TenantFactory()
+        for nm in ["Charlie", "Alice", "Bob"]:
+            TenantMembershipFactory(tenant=tenant, user=UserFactory(tenant=tenant, name=nm))
+
+        resp = _authed_client(admin).get(self._url(tenant.id) + "?limit=2")
+
+        assert resp.status_code == 200
+        assert [r["name"] for r in resp.data["data"]] == ["Alice", "Bob"]
+        assert resp.data["pagination"] == {"page": 1, "limit": 2, "total": 3}
+
+    def test_empty_tenant_returns_empty_list(self, admin):
+        tenant = TenantFactory()
+        resp = _authed_client(admin).get(self._url(tenant.id))
+        assert resp.status_code == 200
+        assert resp.data["data"] == []
+        assert resp.data["pagination"]["total"] == 0
+
+    def test_member_with_no_department_serialises_null(self, admin):
+        tenant = TenantFactory()
+        TenantMembershipFactory(tenant=tenant, user=UserFactory(tenant=tenant))
+        resp = _authed_client(admin).get(self._url(tenant.id))
+        assert resp.data["data"][0]["departmentName"] is None
+
+    def test_404_for_unknown_tenant(self, admin):
+        resp = _authed_client(admin).get(self._url("00000000-0000-0000-0000-000000000000"))
+        assert resp.status_code == 404

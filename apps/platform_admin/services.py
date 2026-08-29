@@ -168,6 +168,13 @@ class PlatformAdminTenantService:
         return user
 
     @staticmethod
+    def list_members(tenant_id):
+        """QuerySet of a tenant's members for the console table (Phase 15d).
+        404s before returning if the tenant doesn't exist."""
+        TenantRepository.get_by_id(tenant_id)
+        return MembershipRepository.list_for_tenant(tenant_id)
+
+    @staticmethod
     def remove_member(tenant_id, user_id) -> None:
         membership = MembershipRepository.get_by_tenant_and_user(tenant_id, user_id)
         MembershipRepository.delete(membership)

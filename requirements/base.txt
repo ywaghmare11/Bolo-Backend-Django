@@ -41,3 +41,13 @@ structlog==26.1.0
 # served by WhiteNoise in the container (see requirements/prod.txt).
 drf-spectacular==0.28.0
 drf-spectacular-sidecar==2025.7.1
+# Multi-format member bulk-import ETL for PlatformAdmin (ROADMAP.md Phase 15c).
+# pandas is the tabular Transform layer (vectorized header normalization, type
+# coercion, validation, within-file dedup, formula-injection neutralization);
+# openpyxl is the engine pandas.read_excel() needs to parse .xlsx (the old xlrd
+# engine dropped .xlsx support in 2020). numpy rides in as a pandas dependency --
+# not pinned separately, since pandas already constrains a compatible version.
+# Both are imported lazily inside apps/platform_admin/etl.py (only touched on an
+# actual import request), same pattern as boto3/openai elsewhere.
+pandas==2.3.3
+openpyxl==3.1.5

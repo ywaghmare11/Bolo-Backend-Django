@@ -2,6 +2,7 @@ from django.urls import path
 
 from apps.platform_admin.views import (
     PlatformAdminLogoutView,
+    PlatformAdminMemberImportView,
     PlatformAdminRequestOtpView,
     PlatformAdminTenantListCreateView,
     PlatformAdminTenantMemberDetailView,
@@ -18,6 +19,11 @@ urlpatterns = [
         "tenants/<uuid:tenant_id>/members/",
         PlatformAdminTenantMembersView.as_view(),
         name="platform-admin-tenant-members",
+    ),
+    path(
+        "tenants/<uuid:tenant_id>/members/import/",
+        PlatformAdminMemberImportView.as_view(),
+        name="platform-admin-tenant-member-import",
     ),
     path(
         "tenants/<uuid:tenant_id>/members/<uuid:user_id>/",

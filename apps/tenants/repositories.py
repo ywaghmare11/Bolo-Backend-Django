@@ -81,5 +81,19 @@ class MembershipRepository:
             raise NotFoundError("TenantMembership", user_id) from None
 
     @staticmethod
+    def upsert(tenant, user, role_level: str, role_label=None, can_broadcast: bool = False):
+        """For the bulk-import Load step -- (tenant, user) is the composite PK, so
+        a re-import of the same member just refreshes their role fields rather
+        than erroring. Returns (membership, created)."""
+        return TenantMembership.objects.update_or_create(
+            tenant=tenant, user=user,
+            defaults={
+                "role_level": role_level,
+                "role_label": role_label,
+                "can_broadcast": can_broadcast,
+            },
+        )
+
+    @staticmethod
     def delete(membership: TenantMembership) -> None:
         membership.delete()

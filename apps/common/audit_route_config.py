@@ -30,6 +30,10 @@ Each row:
                     middleware then resolves the actor from the admin_token cookie
                     (actor_type=PLATFORM_ADMIN, actor_id=null, identity in metadata)
                     instead of the tenant-user `token` cookie.
+  metadata_response_fields  list of keys to copy from response.data["data"] into
+                    AuditLog.metadata alongside the actor identity -- used by the
+                    bulk-import route so the run's {created, updated, skipped}
+                    counts are on the audit row, not only in the HTTP response.
 """
 from apps.common.enums import AuditAction
 
@@ -297,5 +301,20 @@ AUDIT_ROUTE_CONFIG = {
         "tenant_id_kwarg": "tenant_id",
         "action": AuditAction.MEMBER_REMOVED,
         "actor": "platform_admin",
+    },
+    # Bulk import (Phase 15c) -- one row per call, entity is the target tenant
+    # (api-spec.md §22). before == after (the import doesn't mutate the Tenant
+    # row itself); the run's scale is folded into metadata via
+    # metadata_response_fields so "who imported how much into which tenant" is
+    # answerable from the audit trail alone.
+    ("POST", "platform-admin-tenant-member-import"): {
+        "entity_type": "TENANT",
+        "model": "tenants.Tenant",
+        "tracked_fields": TENANT_TRACKED_FIELDS,
+        "id_resolver": _url_kwarg("tenant_id"),
+        "tenant_id_kwarg": "tenant_id",
+        "action": AuditAction.MEMBERS_BULK_IMPORTED,
+        "actor": "platform_admin",
+        "metadata_response_fields": ["created", "updated", "skipped"],
     },
 }

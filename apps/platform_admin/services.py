@@ -149,3 +149,72 @@ class PlatformAdminTenantService:
     def remove_member(tenant_id, user_id) -> None:
         membership = MembershipRepository.get_by_tenant_and_user(tenant_id, user_id)
         MembershipRepository.delete(membership)
+
+    # -- bulk import (ROADMAP.md Phase 15c) -----------------------------------
+
+    IMPORT_CHUNK_SIZE = 100
+
+    @staticmethod
+    def bulk_import_members(tenant_id, file_bytes: bytes, filename: str) -> dict:
+        """Extract -> Transform (apps/platform_admin/etl.py) -> Load. Idempotent:
+        a member already in this tenant is updated, not re-created. Returns
+        {created, updated, skipped, errors:[{row, field, reason}]}."""
+        from apps.platform_admin import etl
+
+        tenant = TenantRepository.get_by_id(tenant_id)  # 404 before touching the file
+
+        df = etl.extract(file_bytes, filename)
+        valid_records, errors = etl.transform(df)
+
+        created = updated = 0
+        skipped = len(errors)
+
+        chunk_size = PlatformAdminTenantService.IMPORT_CHUNK_SIZE
+        for start in range(0, len(valid_records), chunk_size):
+            chunk = valid_records[start:start + chunk_size]
+            # One transaction per chunk -- a mid-import failure leaves a clean,
+            # known boundary (whole chunks committed or not) rather than a
+            # half-written row.
+            with transaction.atomic():
+                for rec in chunk:
+                    outcome = PlatformAdminTenantService._load_one(tenant, rec, errors)
+                    if outcome == "created":
+                        created += 1
+                    elif outcome == "updated":
+                        updated += 1
+                    else:
+                        skipped += 1
+
+        return {"created": created, "updated": updated, "skipped": skipped, "errors": errors}
+
+    @staticmethod
+    def _load_one(tenant, rec: dict, errors: list) -> str:
+        existing = UserRepository.get_by_email_or_none(rec["email"])
+        if existing is not None and str(existing.tenant_id) != str(tenant.id):
+            errors.append({
+                "row": rec["_row"], "field": "email",
+                "reason": "this email already belongs to a different tenant",
+            })
+            return "skipped"
+
+        if existing is not None:
+            UserRepository.update(
+                existing,
+                name=rec["name"],
+                phone=rec["phone"] if rec["phone"] is not None else existing.phone,
+                preferred_lang=rec["preferred_lang"],
+            )
+            MembershipRepository.upsert(
+                tenant, existing, rec["role_level"], rec["role_label"], rec["can_broadcast"],
+            )
+            return "updated"
+
+        user = UserRepository.create(
+            tenant=tenant, name=rec["name"], email=rec["email"],
+            phone=rec["phone"], preferred_lang=rec["preferred_lang"],
+        )
+        MembershipRepository.create(
+            tenant=tenant, user=user, role_level=rec["role_level"],
+            role_label=rec["role_label"], can_broadcast=rec["can_broadcast"],
+        )
+        return "created"

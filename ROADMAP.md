@@ -192,15 +192,17 @@ Not in the original roadmap — this phase exists because `PlatformAdmin`'s real
 | 2. Operator/superadmin | AIBIGO's own ops team | `PlatformAdmin` (`admin_token`, `apps/platform_admin`) | Core CRUD built 2026-08-23 — see below for what's left |
 | 3. Tenant-internal | Each college/firm's own staff | `TenantMembership.role_level` (`TOP`/`MID`/`EXECUTOR`) | Built since Phase 1 |
 
-### 15a — RBAC on `PlatformAdmin` itself
+### 15a — RBAC on `PlatformAdmin` itself — ✅ built 2026-08-29, see `changelog.md` 2026-08-29 (3)
 
 - `PlatformAdmin.role` field. **Scope decision (2026-08-23): implement `SUPER_ADMIN` only for now** — AIBIGO's first ops person is the only real actor today; add `SUPPORT_ADMIN`/`VIEWER` later if/when AIBIGO actually needs to split access within their own team, not speculatively.
 - Carried in the JWT payload (`{adminId, email, isPlatformAdmin, role}`) — no extra DB hit per request, same pattern as tenant-user `roleLevel`.
 - A `HasPlatformAdminRole([...])` permission-class factory, structurally identical to the existing `HasOrgRole([...])` factory (`apps/common/permissions.py`) — same shape, one tier up. Even with only one role today, build the factory now so adding a second role later is a one-line change at each protected view, not a refactor.
 
-### 15b — Un-defer: `AuditLog` for `PlatformAdmin` actions
+### 15b — Un-defer: `AuditLog` for `PlatformAdmin` actions — ✅ built 2026-08-29, see `changelog.md` 2026-08-29 (4)
 
 Deferred on 2026-08-23's initial build as out of scope; **re-scoped in per the corrected business model** — once AIBIGO's own team (not Integrate18) is the one creating tenants and adding/removing members, "who at AIBIGO did what, when" is a real accountability requirement, not a nice-to-have. Requires extending the generic audit middleware (`apps/common/audit_middleware.py`) to resolve a **second actor source** — it currently only decodes the tenant-user `token` cookie to find `actorId`/`tenantId`; it needs an equivalent path for `admin_token` → `actorType: PLATFORM_ADMIN`, `actorId: null` (a `PlatformAdmin` isn't a `User` row), with the admin's identity captured in the audit row's `metadata` instead. `AuditAction.TENANT_CREATED`/`MEMBER_ADDED`/`MEMBER_REMOVED` already exist in the enum (confirmed present since Phase 1) — this is config-table wiring, not new schema.
+
+**Built:** `config` key `actor: "platform_admin"` on the three route rows → middleware calls `decode_admin_cookie` (new, in `apps/common/request_identity.py`), sets `actor_type = PLATFORM_ADMIN` / `actor_id = None` / `metadata = {platformAdminId, platformAdminEmail}`. `AuditLog.tenant` (required) resolved from the target tenant via `tenant_id_kwarg` (member routes) or `tenant_id_resolver` (create-tenant). `write_audit_log_task` gained optional `actor_type`/`metadata` kwargs — every other route unchanged. `MEMBERS_BULK_IMPORTED` deferred to 15c. 7 new tests, no schema change.
 
 ### 15c — Multi-format bulk import (Excel `.xlsx` + CSV + JSON) — a small ETL pipeline
 

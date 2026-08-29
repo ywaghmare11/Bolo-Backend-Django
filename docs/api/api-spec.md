@@ -2390,7 +2390,7 @@ Dedup within the file is case-insensitive (last row wins; earlier duplicate rows
 
 ---
 
-## 22. Platform Admin (Superadmin) *(upstream built 2026-07-15, W35/W98 resolved — core CRUD built here 2026-08-23: OTP auth, create/list tenant, add/remove member. **Deferred, explicitly not built:** Excel/JSON bulk-import (`POST .../members/import`, would need a new openpyxl dependency and has no self-service equivalent to mirror), and wiring `AuditLog` rows for these actions into the generic audit middleware — see CLAUDE.md)*
+## 22. Platform Admin (Superadmin) *(upstream built 2026-07-15, W35/W98 resolved — core CRUD built here 2026-08-23: OTP auth, create/list tenant, add/remove member. RBAC (`PlatformAdmin.role` + `HasPlatformAdminRole`) built 2026-08-29 (Phase 15a); `AuditLog` wiring for `TENANT_CREATED`/`MEMBER_ADDED`/`MEMBER_REMOVED` built 2026-08-29 (Phase 15b). **Deferred, explicitly not built:** Excel/CSV/JSON bulk-import (`POST .../members/import`, Phase 15c) and the standalone admin console SPA (Phase 15d) — see CLAUDE.md)*
 
 A `PlatformAdmin` is a cross-tenant actor, outside `Tenant`/RLS scoping entirely — not a `User`, not a `TenantMembership` role. It registers new tenants and can add/remove users in **any** tenant. No self-registration: rows are provisioned only via an ops-run seed script. See `docs/architecture/domain-model.md`'s "PlatformAdmin" section for the model shape.
 
@@ -2470,7 +2470,7 @@ Response 201:
 
 **`urlSlug`** — required, `^[a-z0-9]+(-[a-z0-9]+)*$`, 2-40 chars. **Rejected, not auto-transformed** if malformed (`400 INVALID_URL_SLUG`). Must be unique across all tenants.
 
-**Not yet built:** the `AuditLog` row this action should write (`action: TENANT_CREATED`, `actorType: PLATFORM_ADMIN`, `entityType: "Tenant"`) — the generic audit middleware only resolves the tenant-user `token` cookie for its actor, and extending it for a second actor source (`admin_token`) wasn't in scope for this pass. Same gap on `MEMBER_ADDED`/`MEMBER_REMOVED` below.
+**Audit (built 2026-08-29, Phase 15b):** writes an `AuditLog` row — `action: TENANT_CREATED`, `actorType: PLATFORM_ADMIN`, `actorId: null` (a `PlatformAdmin` isn't a `User` row), `entityType: "TENANT"`, `entityId` + `tenant` = the new tenant, `before: null`, `after: { vertical, url_slug }`, `metadata: { platformAdminId, platformAdminEmail }`. The generic audit middleware grew a second actor-resolution path that reads the `admin_token` cookie instead of the tenant-user `token` cookie. Same shape on `MEMBER_ADDED`/`MEMBER_REMOVED` below.
 
 **Errors:** 400 `VALIDATION_ERROR` · 400 `INVALID_URL_SLUG` · 400 `TENANT_NAME_TAKEN` · 400 `URL_SLUG_TAKEN` · 400 `EMAIL_TAKEN` · 401
 
@@ -2497,7 +2497,7 @@ Response 201:
 { "data": { "userId": "uuid", "email": "asha@abc.edu" }, "message": "Member added" }
 ```
 
-**Not yet built:** the `AuditLog` row (`action: MEMBER_ADDED`, `actorType: PLATFORM_ADMIN`, `entityType: "User"`) — see the note on `POST /platform-admin/tenants` above.
+**Audit (built 2026-08-29, Phase 15b):** `AuditLog` row — `action: MEMBER_ADDED`, `actorType: PLATFORM_ADMIN`, `actorId: null`, `entityType: "USER"`, `entityId` = the new user, `tenant` = the path `:tenantId`, `after: { tenant_id, preferred_lang }`, `metadata: { platformAdminId, platformAdminEmail }`. See the note on `POST /platform-admin/tenants` above.
 
 **Errors:** 400 `VALIDATION_ERROR` · 400 `EMAIL_ALREADY_IN_TENANT` · 404 `NOT_FOUND` (tenant) · 401
 
@@ -2511,7 +2511,7 @@ Hard-deletes the `TenantMembership` row only — `User` row is left intact. Acti
 Response 200: { "data": null, "message": "Member removed" }
 ```
 
-**Not yet built:** the `AuditLog` row (`action: MEMBER_REMOVED`, `actorType: PLATFORM_ADMIN`, `entityType: "User"`).
+**Audit (built 2026-08-29, Phase 15b):** `AuditLog` row — `action: MEMBER_REMOVED`, `actorType: PLATFORM_ADMIN`, `actorId: null`, `entityType: "USER"`, `entityId` = the removed user, `tenant` = the path `:tenantId`, `before: { tenant_id, preferred_lang }`, `after: null` (DELETE convention), `metadata: { platformAdminId, platformAdminEmail }`. The `User` row itself is not deleted — only the `TenantMembership`.
 
 **Errors:** 404 `NOT_FOUND` · 401
 

@@ -23,6 +23,13 @@ Each row:
   tenant_id_resolver (response) -> tenant_id, only needed for verify-otp: at request time
                     there's no session/JWT yet to decode a tenant_id out of (that's what
                     this request is creating), so it comes from the response body instead.
+  tenant_id_kwarg   name of a URL kwarg holding the tenant id -- for the PlatformAdmin
+                    member routes, where the tenant is in the path (/tenants/:tenantId/...)
+                    and there's no tenant-user JWT to read it from.
+  actor             "platform_admin" on the cross-tenant PlatformAdmin routes: the
+                    middleware then resolves the actor from the admin_token cookie
+                    (actor_type=PLATFORM_ADMIN, actor_id=null, identity in metadata)
+                    instead of the tenant-user `token` cookie.
 """
 from apps.common.enums import AuditAction
 
@@ -35,6 +42,11 @@ EVIDENCE_TRACKED_FIELDS = ["file_type"]
 # "message_json"/"message_html" deliberately excluded -- same structural-fields-only
 # principle as Comment's "text" exclusion.
 BROADCAST_TRACKED_FIELDS = ["status", "requires_acknowledgement"]
+# PlatformAdmin cross-tenant routes. "name" excluded (free text, same principle);
+# role_level lives on TenantMembership, not User, so it isn't reachable from the
+# single-model _fetch_state -- tenant_id is the useful structural fact captured here.
+TENANT_TRACKED_FIELDS = ["vertical", "url_slug"]
+MEMBER_TRACKED_FIELDS = ["tenant_id", "preferred_lang"]
 
 
 def _url_kwarg(name):
@@ -254,5 +266,36 @@ AUDIT_ROUTE_CONFIG = {
         "id_resolver": _logout_actor_id,
         "action": AuditAction.USER_LOGOUT,
         "actor_is_entity": True,
+    },
+    # PlatformAdmin (cross-tenant / superadmin) -- actor resolved from the
+    # admin_token cookie, not the tenant-user `token` cookie. TENANT_CREATED/
+    # MEMBER_ADDED/MEMBER_REMOVED already exist in AuditAction (Phase 1);
+    # docs/api/api-spec.md §22 specifies entityType "Tenant"/"User".
+    ("POST", "platform-admin-tenants"): {
+        "entity_type": "TENANT",
+        "model": "tenants.Tenant",
+        "tracked_fields": TENANT_TRACKED_FIELDS,
+        "id_resolver_post": _response_data_field("tenantId"),
+        "tenant_id_resolver": _response_data_field("tenantId"),
+        "action": AuditAction.TENANT_CREATED,
+        "actor": "platform_admin",
+    },
+    ("POST", "platform-admin-tenant-members"): {
+        "entity_type": "USER",
+        "model": "users.User",
+        "tracked_fields": MEMBER_TRACKED_FIELDS,
+        "id_resolver_post": _response_data_field("userId"),
+        "tenant_id_kwarg": "tenant_id",
+        "action": AuditAction.MEMBER_ADDED,
+        "actor": "platform_admin",
+    },
+    ("DELETE", "platform-admin-tenant-member-detail"): {
+        "entity_type": "USER",
+        "model": "users.User",
+        "tracked_fields": MEMBER_TRACKED_FIELDS,
+        "id_resolver": _url_kwarg("user_id"),
+        "tenant_id_kwarg": "tenant_id",
+        "action": AuditAction.MEMBER_REMOVED,
+        "actor": "platform_admin",
     },
 }

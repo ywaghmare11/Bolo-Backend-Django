@@ -35,3 +35,25 @@ def decode_access_cookie(request):
     if "userId" not in token or "tenantId" not in token:
         return None, None
     return token["userId"], token["tenantId"]
+
+
+def decode_admin_cookie(request):
+    """Returns (admin_id, email) for a valid PlatformAdmin `admin_token` cookie,
+    or (None, None) for no / malformed / wrong-shaped token -- the mirror of
+    decode_access_cookie for the second, cross-tenant auth space, with the same
+    best-effort, never-raise contract. A PlatformAdmin is not a User row, so the
+    audit middleware uses this only to attribute an audit row's metadata and
+    actor_type, never AuditLog.actor_id (which stays null for PLATFORM_ADMIN
+    actions -- see docs/api/api-spec.md and AuditActorType.PLATFORM_ADMIN)."""
+    from apps.platform_admin.tokens import ADMIN_COOKIE_NAME
+
+    raw = request.COOKIES.get(ADMIN_COOKIE_NAME)
+    if not raw:
+        return None, None
+    try:
+        token = AccessToken(raw)
+    except TokenError:
+        return None, None
+    if not token.get("isPlatformAdmin") or "adminId" not in token:
+        return None, None
+    return token["adminId"], token.get("email")

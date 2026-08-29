@@ -91,6 +91,17 @@ class MembershipRepository:
         )
 
     @staticmethod
+    def list_for_tenant(tenant_id):
+        """All members of one tenant, for the operator console's member table
+        (Phase 15d). Returns a QuerySet (the view paginates it), user +
+        department preloaded, ordered by name."""
+        return (
+            TenantMembership.objects.filter(tenant_id=tenant_id)
+            .select_related("user", "department")
+            .order_by("user__name", "user__email")
+        )
+
+    @staticmethod
     def get_by_tenant_and_user(tenant_id, user_id) -> TenantMembership:
         try:
             return TenantMembership.objects.get(tenant_id=tenant_id, user_id=user_id)

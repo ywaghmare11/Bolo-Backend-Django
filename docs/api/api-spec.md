@@ -2390,7 +2390,7 @@ Dedup within the file is case-insensitive (last row wins; earlier duplicate rows
 
 ---
 
-## 22. Platform Admin (Superadmin) *(upstream built 2026-07-15, W35/W98 resolved — core CRUD built here 2026-08-23: OTP auth, create/list tenant, add/remove member. RBAC (`PlatformAdmin.role` + `HasPlatformAdminRole`) built 2026-08-29 (Phase 15a); `AuditLog` wiring for `TENANT_CREATED`/`MEMBER_ADDED`/`MEMBER_REMOVED` built 2026-08-29 (Phase 15b). **Deferred, explicitly not built:** Excel/CSV/JSON bulk-import (`POST .../members/import`, Phase 15c) and the standalone admin console SPA (Phase 15d) — see CLAUDE.md)*
+## 22. Platform Admin (Superadmin) *(upstream built 2026-07-15, W35/W98 resolved — core CRUD built here 2026-08-23: OTP auth, create/list tenant, add/remove member. RBAC (`PlatformAdmin.role` + `HasPlatformAdminRole`) built 2026-08-29 (Phase 15a); `AuditLog` wiring for `TENANT_CREATED`/`MEMBER_ADDED`/`MEMBER_REMOVED` built 2026-08-29 (Phase 15b); `.xlsx`/`.csv`/`.json` member bulk-import ETL + `MEMBERS_BULK_IMPORTED` audit built 2026-08-29 (Phase 15c). **Deferred, explicitly not built:** the standalone admin console SPA (Phase 15d) — see CLAUDE.md)*
 
 A `PlatformAdmin` is a cross-tenant actor, outside `Tenant`/RLS scoping entirely — not a `User`, not a `TenantMembership` role. It registers new tenants and can add/remove users in **any** tenant. No self-registration: rows are provisioned only via an ops-run seed script. See `docs/architecture/domain-model.md`'s "PlatformAdmin" section for the model shape.
 
@@ -2517,18 +2517,41 @@ Response 200: { "data": null, "message": "Member removed" }
 
 ---
 
-### POST /platform-admin/tenants/:tenantId/members/import — bulk Excel/JSON import into any tenant *(not built here — see CLAUDE.md)*
+### POST /platform-admin/tenants/:tenantId/members/import — bulk member import into any tenant *(built here 2026-08-29, ROADMAP.md Phase 15c — a small ETL pipeline)*
 
-Same underlying import logic as the tenant self-service bulk import — identical Excel/JSON contract, validation, idempotent upsert-by-email behavior — but `tenantId` comes from the URL param, so a platform admin can bulk-import members into **any** tenant. Neither this endpoint nor its self-service equivalent exist in this project yet; would need a new `openpyxl` dependency.
+**Access:** `requirePlatformAdmin` + `HasPlatformAdminRole(["SUPER_ADMIN"])`. `tenantId` from the URL, so an operator can import into **any** tenant.
+
+**Request:** `multipart/form-data`, one field `file` — a `.xlsx`, `.csv`, **or** `.json` file (CSV and JSON are a bolo-backend-django extension of upstream's Excel-only contract, per direct request). Max 5 MB / 5000 data rows.
+
+**Columns** (header names are case-insensitive and alias-normalised — `E-mail`/`Email Address`/`mail` → `email`, `Role`/`Role Level` → `roleLevel`, `Full Name` → `name`, `Designation`/`Title` → `roleLabel`, `Can Broadcast` → `canBroadcast`, `Language` → `preferredLang`):
+
+| column | required | notes |
+|---|---|---|
+| `name` | ✅ | |
+| `email` | ✅ | lower-cased; globally unique — an email already in a *different* tenant is skipped with an error |
+| `roleLevel` | ✅ | `TOP` \| `MID` \| `EXECUTOR` (case-insensitive); anything else rejects that row |
+| `roleLabel` | — | free-text designation |
+| `phone` | — | |
+| `canBroadcast` | — | `true/yes/1` → true, else false; default false |
+| `preferredLang` | — | `EN` \| `HI`; unrecognised → `EN` |
+
+Department assignment is **not** supported by import (single-add's `departmentId` only). JSON input may be a bare array or `{ "members": [...] }`.
+
+**Behaviour:** Extract (one DataFrame regardless of format; CSV tries `utf-8-sig` then falls back to `latin-1`) → Transform (header normalisation, type coercion, **vectorised** per-row validation, within-file dedup by email keeping the **last** occurrence, CSV/Excel **formula-injection** neutralisation — a cell starting `= + - @` is prefixed with `'`) → Load (idempotent `update_or_create` by email, 100 rows per transaction). A member already in this tenant is **updated**, not duplicated. One bad row never fails the batch — it becomes an `errors[]` entry and is counted in `skipped`.
 
 ```json
 Response 200:
-{ "success": true, "message": "Import complete", "data": { "created": 5, "updated": 1, "skipped": 0, "errors": [] } }
+{ "success": true, "message": "Import complete",
+  "data": { "created": 5, "updated": 1, "skipped": 2,
+            "errors": [ { "row": 4, "field": "roleLevel", "reason": "must be one of EXECUTOR, MID, TOP" },
+                        { "row": 7, "field": "email", "reason": "not a valid email address" } ] } }
 ```
 
-Writes a single `AuditLog` row per call: `action: MEMBERS_BULK_IMPORTED`, `actorType: PLATFORM_ADMIN`, `entityType: "Tenant"`.
+`row` is 1-based and counts the header as row 1 (i.e. it matches the spreadsheet line); for JSON input, `row` 2 is the first array element.
 
-**Errors:** 400 `VALIDATION_ERROR` / `INVALID_FILE` · 404 `NOT_FOUND` (tenant) · 401
+Writes one `AuditLog` row: `action: MEMBERS_BULK_IMPORTED`, `actorType: PLATFORM_ADMIN`, `actorId: null`, `entityType: "TENANT"`, `entityId` + `tenant` = the target tenant, `metadata: { platformAdminId, platformAdminEmail, created, updated, skipped }` (the run's scale is on the audit row, not only the HTTP response).
+
+**Errors:** 400 `INVALID_FILE` (missing/oversized file, unsupported extension, unparseable content, missing a required column, empty, over the row cap) · 404 `NOT_FOUND` (tenant) · 401
 
 ---
 
@@ -2637,5 +2660,5 @@ Response 200:
 | GET /platform-admin/tenants | requirePlatformAdmin | none | none — cross-tenant by design |
 | POST /platform-admin/tenants/:tenantId/members | requirePlatformAdmin | none | none — cross-tenant by design |
 | DELETE /platform-admin/tenants/:tenantId/members/:userId | requirePlatformAdmin | none | none — cross-tenant by design |
-| POST /platform-admin/tenants/:tenantId/members/import | requirePlatformAdmin | none | none — cross-tenant by design; **not built here** (bulk-import deferred, see §22) |
+| POST /platform-admin/tenants/:tenantId/members/import | requirePlatformAdmin + SUPER_ADMIN | none | none — cross-tenant by design; built 2026-08-29 (Phase 15c), `.xlsx`/`.csv`/`.json` ETL, see §22 |
 | GET /health | none | none | none |

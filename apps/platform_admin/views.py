@@ -3,6 +3,7 @@ from rest_framework.views import APIView
 
 from apps.auth.serializers import RequestOtpSerializer, VerifyOtpSerializer
 from apps.common.enums import PlatformAdminRole
+from apps.common.exceptions import ValidationError
 from apps.common.permissions import AllowAny, HasPlatformAdminRole, IsAuthenticated
 from apps.common.responses import success_response
 from apps.platform_admin.authentication import PlatformAdminCookieJWTAuthentication
@@ -121,3 +122,30 @@ class PlatformAdminTenantMemberDetailView(APIView):
     def delete(self, request, tenant_id, user_id):
         PlatformAdminTenantService.remove_member(tenant_id, user_id)
         return success_response(None, "Member removed")
+
+
+class PlatformAdminMemberImportView(APIView):
+    """Multi-format bulk member import (ROADMAP.md Phase 15c) -- multipart upload
+    of a single `file` (.xlsx / .csv / .json). The ETL pipeline lives in
+    apps/platform_admin/etl.py; the Load step is in the service."""
+
+    MAX_UPLOAD_BYTES = 5 * 1024 * 1024
+
+    authentication_classes = [PlatformAdminCookieJWTAuthentication]
+    permission_classes = [IsAuthenticated, HasPlatformAdminRole([PlatformAdminRole.SUPER_ADMIN])]
+
+    def post(self, request, tenant_id):
+        file_obj = request.FILES.get("file")
+        if file_obj is None:
+            raise ValidationError("Attach a file as multipart field 'file'.", code="INVALID_FILE")
+        if file_obj.size > self.MAX_UPLOAD_BYTES:
+            raise ValidationError(
+                f"File is too large ({file_obj.size} bytes); the limit is "
+                f"{self.MAX_UPLOAD_BYTES} bytes.",
+                code="INVALID_FILE",
+            )
+
+        result = PlatformAdminTenantService.bulk_import_members(
+            tenant_id, file_obj.read(), file_obj.name,
+        )
+        return success_response(result, "Import complete")

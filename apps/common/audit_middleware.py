@@ -94,6 +94,12 @@ class AuditLogMiddleware:
         if "tenant_id_resolver" in config:
             tenant_id = config["tenant_id_resolver"](response) or tenant_id
 
+        if "metadata_response_fields" in config:
+            data = (getattr(response, "data", None) or {}).get("data")
+            if isinstance(data, dict):
+                extra = {k: data.get(k) for k in config["metadata_response_fields"]}
+                metadata = {**(metadata or {}), **extra}
+
         write_audit_log_task.delay(
             tenant_id=tenant_id,
             actor_id=actor_id,

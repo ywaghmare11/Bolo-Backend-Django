@@ -13,6 +13,13 @@ class UserRepository:
             raise NotFoundError("User", email) from None
 
     @staticmethod
+    def get_by_email_or_none(email: str) -> User | None:
+        """For the bulk-import Load step -- `email` is globally unique, so a hit
+        might belong to a *different* tenant; the caller checks tenant_id before
+        deciding create vs update vs skip."""
+        return User.objects.filter(email=email).first()
+
+    @staticmethod
     def get_by_id(user_id: str) -> User:
         try:
             return User.objects.get(id=user_id)

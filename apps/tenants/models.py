@@ -1,6 +1,6 @@
 from django.db import models
 
-from apps.common.enums import OrgRoleLevel, Vertical
+from apps.common.enums import OrgRoleLevel, TenantStatus, Vertical
 from apps.common.models import TimestampedModel
 
 
@@ -10,12 +10,19 @@ class Tenant(TimestampedModel):
     # Cosmetic post-login routing only (domain-model.md) -- drives bolo-web's
     # /{urlSlug}/{firstName} path, never used for tenant scoping/authorization
     # (that stays keyed on `id` from the JWT everywhere else). Nullable because
-    # the real assignment flow is PlatformAdmin's tenant-registration endpoint
-    # (POST /platform-admin/tenants), not built in this project yet -- see
-    # CLAUDE.md. Existing tenants are backfilled via migration in the meantime
-    # so bolo-web's PrivateRoute guard (which force-logs-out on a missing
-    # tenantSlug) doesn't break local login testing.
+    # tenants predating POST /platform-admin/tenants (fixtures, seed_dev_data)
+    # have no slug; existing tenants are backfilled via migration.
     url_slug = models.CharField(max_length=40, unique=True, null=True, blank=True)
+
+    # Operator offboarding lifecycle (ROADMAP.md Phase 15e). SUSPENDED cuts all
+    # login/refresh for this tenant's users and stops its Celery sweeps, with
+    # every row retained and the transition fully reversible. Set only via
+    # PATCH /platform-admin/tenants/:id (SUPER_ADMIN).
+    status = models.CharField(
+        max_length=16, choices=TenantStatus.choices, default=TenantStatus.ACTIVE,
+    )
+    suspended_at = models.DateTimeField(null=True, blank=True)
+    suspension_reason = models.CharField(max_length=255, null=True, blank=True)
 
     class Meta:
         db_table = "tenants"

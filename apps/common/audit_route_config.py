@@ -50,6 +50,10 @@ BROADCAST_TRACKED_FIELDS = ["status", "requires_acknowledgement"]
 # role_level lives on TenantMembership, not User, so it isn't reachable from the
 # single-model _fetch_state -- tenant_id is the useful structural fact captured here.
 TENANT_TRACKED_FIELDS = ["vertical", "url_slug"]
+# Tenant offboarding (Phase 15e). suspension_reason is operator-entered status
+# metadata ("non-payment", "customer offboarded"), not end-user content -- so it
+# belongs in before/after, unlike a comment body or task description.
+TENANT_STATUS_TRACKED_FIELDS = ["status", "suspension_reason"]
 MEMBER_TRACKED_FIELDS = ["tenant_id", "preferred_lang"]
 
 
@@ -72,6 +76,16 @@ def _logout_actor_id(request, match):
 
     actor_id, _tenant_id = decode_access_cookie(request)
     return actor_id
+
+
+def resolve_tenant_status_action(before, after):
+    """PATCH /platform-admin/tenants/:id sets status to ACTIVE or SUSPENDED --
+    map to the matching AuditAction (Phase 15e)."""
+    from apps.common.enums import TenantStatus
+
+    if after and after.get("status") == TenantStatus.SUSPENDED:
+        return AuditAction.TENANT_SUSPENDED
+    return AuditAction.TENANT_REACTIVATED
 
 
 def resolve_task_update_action(before, after):
@@ -282,6 +296,15 @@ AUDIT_ROUTE_CONFIG = {
         "id_resolver_post": _response_data_field("tenantId"),
         "tenant_id_resolver": _response_data_field("tenantId"),
         "action": AuditAction.TENANT_CREATED,
+        "actor": "platform_admin",
+    },
+    ("PATCH", "platform-admin-tenant-detail"): {
+        "entity_type": "TENANT",
+        "model": "tenants.Tenant",
+        "tracked_fields": TENANT_STATUS_TRACKED_FIELDS,
+        "id_resolver": _url_kwarg("tenant_id"),
+        "tenant_id_kwarg": "tenant_id",
+        "action": resolve_tenant_status_action,
         "actor": "platform_admin",
     },
     ("POST", "platform-admin-tenant-members"): {

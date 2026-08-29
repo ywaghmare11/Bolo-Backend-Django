@@ -283,6 +283,19 @@ for _, row in valid_rows.iterrows():
 
 **Talking point:** the corrected business model (Integrate18 → AIBIGO → their tenants, §Phase 15 intro above) is the strongest thing to lead with here — it demonstrates reasoning about *who the actual actors in a system are*, not just implementing whatever a spec says. Pair it with the ETL formula-injection handling (15c) as your "I thought about the edge case nobody asks about" answer, and the standalone-app decision itself as a "here's a tradeoff I made deliberately, and here's why" answer.
 
+### 15e — Tenant offboarding (suspend / reactivate) — ✅ built 2026-08-29, see `changelog.md` 2026-08-29 (6)
+
+Added because the `PlatformAdmin` surface (15a–15c) could *create* and *populate* tenants but had no way to **offboard** one — the real need when a customer stops paying or wants to leave BOLO. Not in any upstream contract (upstream has no tenant-lifecycle surface at all); this is the same "who are the actual actors" reasoning as the Phase 15 intro. Deliberately **suspend/reactivate only** — no hard-delete, because `AuditLog.tenant` (and every other tenant FK) is `on_delete=PROTECT` and the CA/CS audit trail is a compliance requirement (W63). A true purge is a separate, **export-first** step (W58's "archive → provide to org → permanently delete"), not built here.
+
+**Built:**
+- **`Tenant.status`** enum (`ACTIVE` / `SUSPENDED`, default `ACTIVE`) + `suspended_at` + `suspension_reason` (migration `0004`, NOT NULL + default so existing tenants backfill). `TenantStatus` in `apps/common/enums.py`; new `AuditAction.TENANT_SUSPENDED` / `TENANT_REACTIVATED`.
+- **`PATCH /platform-admin/tenants/:tenantId`** (`SUPER_ADMIN`-gated) → `{ status, reason? }` → `PlatformAdminTenantService.set_tenant_status` (`ConflictError(TENANT_STATUS_UNCHANGED)` guards a no-op). `TenantRepository.set_status` stamps/clears `suspended_at` + `suspension_reason`. `status` also surfaced on the tenant **list**.
+- **Enforcement** — `AuthService._assert_tenant_active(membership)` (the tenant is already `select_related`'d) raises `403 TENANT_SUSPENDED` from `request_otp` (best-effort), `verify_otp`, and `refresh`. Combined with the 15-min access token this fully locks a suspended tenant out within one token lifetime — no per-request DB check. Celery: `task_due_proximity_sweep` and the AI-nudge `_accepted_active_tasks()` gain `tenant__status=ACTIVE`. `add_member` / `bulk_import_members` reject into a suspended tenant with `409 TENANT_SUSPENDED`. Sticky-note sweeps left as-is (in-app-only reminder / harmless retention delete).
+- **Audit** — new route-config row (`PATCH platform-admin-tenant-detail`, `resolve_tenant_status_action(before, after)`) reuses 15b's `actor: "platform_admin"` machinery; `before`/`after` capture `status` + `suspension_reason` (operator status metadata, not end-user content).
+- 19 new tests (`apps/platform_admin/tests/test_tenant_offboarding.py`); no per-request-auth change.
+
+**Not built (deliberate, later):** hard `DELETE` / purge, the W58 data-export handback, a tenant-side self-service "close our account" request, and an immediate (sub-15-min) session cut via a cached per-request tenant-status check.
+
 ---
 
 ## Suggested order to actually build in

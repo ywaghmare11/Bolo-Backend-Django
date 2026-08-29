@@ -7,8 +7,8 @@ from django.db import transaction
 from django.utils import timezone
 
 from apps.common.email import EmailService
-from apps.common.enums import OrgRoleLevel
-from apps.common.exceptions import AppError, NotFoundError, ValidationError
+from apps.common.enums import OrgRoleLevel, TenantStatus
+from apps.common.exceptions import AppError, ConflictError, NotFoundError, ValidationError
 from apps.platform_admin.repositories import PlatformAdminOtpRepository, PlatformAdminRepository
 from apps.platform_admin.tokens import issue_admin_access_token
 from apps.tenants.repositories import MembershipRepository, TenantRepository
@@ -131,8 +131,30 @@ class PlatformAdminTenantService:
         return TenantRepository.list_with_counts()
 
     @staticmethod
+    def set_tenant_status(tenant_id, status: str, reason: str | None = None):
+        """Operator offboarding (ROADMAP.md Phase 15e) -- suspend cuts login for
+        this tenant's users and its Celery sweeps; reactivate restores both. All
+        data is retained either way. Idempotent-guarded so a no-op PATCH doesn't
+        re-stamp suspended_at or write a spurious audit row."""
+        tenant = TenantRepository.get_by_id(tenant_id)
+        if tenant.status == status:
+            raise ConflictError(
+                f"Tenant is already {status}.", code="TENANT_STATUS_UNCHANGED",
+            )
+        return TenantRepository.set_status(tenant, status, reason)
+
+    @staticmethod
+    def _assert_active(tenant) -> None:
+        if tenant.status == TenantStatus.SUSPENDED:
+            raise ConflictError(
+                "This tenant is suspended; reactivate it before adding members.",
+                code="TENANT_SUSPENDED",
+            )
+
+    @staticmethod
     def add_member(tenant_id, name, email, role_level, role_label=None, department_id=None, phone=None):
         tenant = TenantRepository.get_by_id(tenant_id)
+        PlatformAdminTenantService._assert_active(tenant)
 
         if UserRepository.email_exists(email):
             raise ValidationError("Email already in use", code="EMAIL_ALREADY_IN_TENANT")
@@ -162,6 +184,7 @@ class PlatformAdminTenantService:
         from apps.platform_admin import etl
 
         tenant = TenantRepository.get_by_id(tenant_id)  # 404 before touching the file
+        PlatformAdminTenantService._assert_active(tenant)
 
         df = etl.extract(file_bytes, filename)
         valid_records, errors = etl.transform(df)

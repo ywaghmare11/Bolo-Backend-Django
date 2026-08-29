@@ -1,6 +1,6 @@
 from rest_framework import serializers
 
-from apps.common.enums import Language, OrgRoleLevel, Vertical
+from apps.common.enums import Language, OrgRoleLevel, TenantStatus, Vertical
 
 
 class CreateTenantSerializer(serializers.Serializer):
@@ -12,6 +12,17 @@ class CreateTenantSerializer(serializers.Serializer):
     adminPhone = serializers.CharField(max_length=32, required=False, allow_null=True, allow_blank=True)
     roleLabel = serializers.CharField(max_length=100, required=False, allow_null=True, allow_blank=True)
     preferredLang = serializers.ChoiceField(choices=Language.choices, required=False, default=Language.EN)
+
+
+class UpdateTenantSerializer(serializers.Serializer):
+    """PATCH /platform-admin/tenants/:id -- operator offboarding (Phase 15e).
+    Only the lifecycle status is mutable here; name/vertical/slug are set once
+    at creation."""
+
+    status = serializers.ChoiceField(choices=TenantStatus.choices)
+    reason = serializers.CharField(
+        max_length=255, required=False, allow_blank=True, allow_null=True,
+    )
 
 
 class AddMemberSerializer(serializers.Serializer):
@@ -45,9 +56,23 @@ def serialize_tenant_list_item(tenant) -> dict:
         "tenantId": str(tenant.id),
         "name": tenant.name,
         "vertical": tenant.vertical,
+        "status": tenant.status,
         "createdAt": tenant.created_at.isoformat(),
         "memberCount": tenant.member_count_annotated,
         "departmentCount": tenant.dept_count_annotated,
+    }
+
+
+def serialize_tenant_detail(tenant) -> dict:
+    return {
+        "tenantId": str(tenant.id),
+        "name": tenant.name,
+        "vertical": tenant.vertical,
+        "urlSlug": tenant.url_slug,
+        "status": tenant.status,
+        "suspendedAt": tenant.suspended_at.isoformat() if tenant.suspended_at else None,
+        "suspensionReason": tenant.suspension_reason,
+        "createdAt": tenant.created_at.isoformat(),
     }
 
 

@@ -153,43 +153,92 @@ The `test` job passes `DJANGO_SECRET_KEY` / `DATABASE_URL` / `REDIS_URL` as job
 
 ---
 
-## 6. CD pipeline to AWS ECS Fargate (`.github/workflows/deploy.yml`)
+## 6. CD pipeline: staging → approval → production (`.github/workflows/deploy.yml`)
 
-Committed as a **reference, disabled** workflow (`workflow_dispatch` only, guarded
-by `if: vars.AWS_REGION != ''`) — it does nothing until the AWS side and the
-secrets/vars exist. When enabled, a merge to `main` runs:
+Still committed as a **reference, disabled** workflow — `workflow_dispatch` only,
+with the `build` job guarded by `if: vars.AWS_REGION != ''` (a skipped `build`
+skips its dependents too), so the whole thing is inert until the AWS stacks and
+the GitHub Environments exist. When enabled (trigger flipped to
+`push: branches: [main]`), a merge to `main` promotes **that one commit** through
+two environments:
 
-1. **Authenticate to AWS via OIDC.** `aws-actions/configure-aws-credentials`
-   exchanges a short-lived GitHub OIDC token for temporary AWS credentials by
-   assuming an IAM role. **No long-lived AWS access keys are stored in GitHub.**
+```
+build (once)  ──►  deploy-staging (automatic)  ──►  deploy-production (manual gate)
+```
 
-2. **Build & push the image to ECR.** Tagged with the **commit SHA** (immutable,
-   traceable) plus `latest`. `docker push` to the Amazon ECR repo.
+### The three jobs
 
-3. **Run migrations as a one-off ECS task**, *before* the rolling deploy:
-   `aws ecs run-task … --overrides '…command":["python","manage.py","migrate"]'`.
-   Migrations run **once**, not per web container, and complete before any new
-   code serves traffic. This only works if migrations are backward-compatible —
-   see §7.
+1. **`build`** — runs once. OIDC into AWS (no stored keys), `docker build`, push
+   to the **one shared ECR repository** tagged with the **commit SHA**, and export
+   that image URI as a job output. If the tag already exists (workflow re-run, or
+   a `workflow_dispatch` with an explicit `image_tag`) it reuses it instead of
+   rebuilding. No `environment:` — it touches nothing environment-specific.
 
-4. **Register a new task-definition revision** with the new image
-   (`amazon-ecs-render-task-definition`).
+2. **`deploy-staging`** — `needs: build`, `environment: staging`, **no required
+   reviewers**, so it runs automatically. It (a) runs `migrate` as a one-off
+   Fargate task against **staging's RDS**, then (b) renders a new task-definition
+   revision pointing at `needs.build.outputs.image` and calls
+   `aws ecs update-service` on **staging's cluster**, with
+   `wait-for-service-stability`.
 
-5. **Update the ECS service** to that revision
-   (`amazon-ecs-deploy-task-definition`, `wait-for-service-stability: true`). ECS
-   does a **rolling replace**: start new tasks → wait for their ALB health checks
-   to pass → shift traffic → drain and stop the old tasks. If the new tasks never
-   go healthy, ECS's circuit breaker rolls back automatically.
+3. **`deploy-production`** — `needs: deploy-staging`, `environment: production`.
+   The `production` GitHub Environment has **Required reviewers** configured, so
+   the job starts, immediately **parks in a "waiting" state**, and a listed
+   reviewer must click *Approve* on the run before it proceeds. It then does
+   exactly what `deploy-staging` did — one-off `migrate`, then a rolling
+   `update-service` — but against **production's** RDS and cluster, deploying
+   **the same SHA-tagged image** staging just validated. Never a rebuild: what QA
+   signed off on is byte-for-byte what ships.
 
-Where the dependencies live: **RDS** Postgres (Multi-AZ), **ElastiCache** Redis,
-**S3** buckets, **SES** — all reached over the VPC's private subnets; the ECS task
-role carries the S3/SES IAM permissions so the app needs no access keys.
+### One set of steps, two environments — no branching
+
+Every deploy step reads `vars.ECS_CLUSTER`, `vars.ECS_SERVICE`,
+`vars.ECS_TASK_FAMILY`, `vars.PRIVATE_SUBNETS`, `vars.SERVICE_SG` and
+`secrets.AWS_DEPLOY_ROLE_ARN`. These are defined **per GitHub Environment**
+(Settings → Environments → *staging* / *production* → Secrets and Variables), so
+the job declaring `environment: staging` resolves them to staging's values and the
+one declaring `environment: production` resolves them to production's — with **no
+`if`/matrix branching in the YAML**. Only `vars.AWS_REGION` and
+`vars.ECR_REPOSITORY` live at repository scope (genuinely shared).
+
+### What's duplicated per environment, what's shared
+
+**Each of staging and production gets its own:** ECS cluster + web/worker/beat
+services; RDS Postgres (staging smaller, production Multi-AZ); ElastiCache Redis;
+ALB + target group + domain (`staging.` host vs the real host); `<family>-migrate`
+task definition; OIDC deploy role (scoped to that environment's resources).
+
+**Shared across both:** the **ECR repository** (one repo, images addressed by
+commit-SHA tag), the app image itself, and the `config.settings.prod` settings
+module. Staging is production's topology at a smaller size with its own data — a
+deploy that's green on staging is high-confidence for production because
+everything except scale and data is identical.
+
+### Per-environment migrate, before each rolling deploy
+
+Each deploy job runs `migrate` against **its own** RDS **before** rolling that
+environment's service: staging's schema moves first and QA exercises it, then
+production's moves at approval time. Migrations must be backward-compatible
+(expand/contract — §7) because the still-running old tasks keep serving through
+both the one-off migrate task and the rolling replace.
+
+The dependencies (RDS, ElastiCache, S3, SES) are reached over each VPC's private
+subnets; the ECS **task role** carries the S3/SES IAM permissions so the app
+itself needs no access keys.
+
+### Continuous delivery, not continuous deployment
+
+Every green commit on `main` is **automatically deployed to staging** and is then
+**one approval click from production** — the pipeline is always ready to ship, a
+human decides when. That's *continuous delivery*. *Continuous deployment* would
+delete the `deploy-production` approval gate and push every merge straight to
+production; this project keeps the human in the loop for the prod step on purpose.
 
 ---
 
 ## 7. Zero-downtime deploys & database migrations
 
-Zero downtime comes from the **rolling replace + health checks** in §6.5 — old
+Zero downtime comes from the **rolling replace + health checks** in §6 — old
 containers keep serving until new ones are proven healthy.
 
 The catch is the database. During the rollout, **old and new code run at the same
@@ -210,10 +259,12 @@ is the most common way to break a deploy.
 
 ## 8. Rollback
 
-- **App code:** re-point the ECS service at the previous task-definition revision
-  (`aws ecs update-service --task-definition <family>:<prev>`) — or just re-run the
-  deploy workflow with an older `image_tag`. ECS rolls forward to the old image the
-  same way it rolled to the new one.
+- **App code:** re-point the affected environment's ECS service at the previous
+  task-definition revision
+  (`aws ecs update-service --cluster <env-cluster> --task-definition <family>:<prev>`)
+  — or re-run `deploy.yml` via `workflow_dispatch` with an older `image_tag` (it
+  promotes that existing ECR image, still through staging then the prod approval
+  gate). ECS rolls forward to the old image the same way it rolled to the new one.
 - **Database:** there is no automatic down-migration in production. Because
   migrations are expand/contract and backward-compatible, rolling the *code* back
   is safe without touching the schema. Destructive schema changes only ship once
@@ -223,20 +274,99 @@ is the most common way to break a deploy.
 
 ---
 
-## 9. Interview cheat-sheet
+## 9. Monitoring
+
+Not provisioned yet — like the rest of the AWS side, the actual infra stays in the
+roadmap's *"Future — Production Deployment on AWS"* bucket. This section documents
+the intended design, not something running today.
+
+### Health checks (ALB target group)
+
+Each environment's ALB target group health-checks its web tasks on a lightweight
+path. There's no dedicated endpoint in the code yet — the options are a tiny
+no-DB, no-auth `/healthz` view, or reusing `/api/v1/schema/` (already unauthed and
+cheap). A task must pass the check before the ALB routes traffic to it and before
+ECS treats a rolling deploy as succeeded; a task that starts failing is pulled
+from rotation and replaced. **`HealthyHostCount = 0`** is the single clearest
+"the service is down" signal.
+
+### Logs (CloudWatch Logs)
+
+The container writes **`structlog` JSON to stdout** (Phase 10). The ECS task
+definition uses the **`awslogs`** log driver, so every line lands in a per-service
+CloudWatch Logs group (`/ecs/bolo-web`, `/ecs/bolo-worker`, `/ecs/bolo-beat`).
+Because each line is JSON carrying `request_id` / `tenant_id` / `actor_id`,
+**CloudWatch Logs Insights** can query them structurally — e.g. reconstruct one
+request end to end:
+
+```
+fields @timestamp, event, path, status_code, duration_ms
+| filter request_id = "abc123"
+| sort @timestamp asc
+```
+
+That `request_id` is the same value returned in error responses / surfaced to the
+client, so an incident report gives you a direct key into the logs.
+
+### Metrics & alarms (CloudWatch → SNS)
+
+ECS, ALB and RDS publish CloudWatch metrics with no extra code. The alarms worth
+wiring — each notifying an **SNS** topic that fans out to email / Slack /
+PagerDuty:
+
+| Alarm | Condition (starting point) | Why it matters |
+|---|---|---|
+| **5xx rate** | ALB `HTTPCode_Target_5XX_Count` / request count > ~2% for 5 min | the app is erroring for real users |
+| **No healthy tasks** | ALB `HealthyHostCount` = 0 for 1 min | service is fully down |
+| **RDS CPU** | `CPUUtilization` > 80% for 10 min | a query regression or an undersized DB |
+| **RDS connections** | `DatabaseConnections` approaching `max_connections` | a connection leak or bad pool config |
+| **Redis memory / evictions** | ElastiCache `DatabaseMemoryUsagePercentage` high, or `Evictions` > 0 sustained | cache undersized and thrashing |
+| **Worker backlog** | custom metric on the Celery/Redis queue length | background jobs falling behind |
+
+### Automatic rollback (ECS deployment circuit breaker)
+
+Each ECS service is configured with
+`deploymentConfiguration.deploymentCircuitBreaker = { enable: true, rollback: true }`.
+If a new deployment's tasks never reach a steady healthy state — crash loop,
+failing health checks, a migration problem that only shows at boot — ECS
+**aborts the deployment and rolls the service back** to the last known-good
+task-definition revision, no human action. The workflow's
+`wait-for-service-stability` step then fails, so the GitHub run goes red and the
+rollback is visible rather than silent.
+
+### Error tracking (Sentry — off by default)
+
+Intended integration: `sentry-sdk` initialised in `config/settings/prod.py`
+**only when a `SENTRY_DSN` env var is present**. Unset (the default, and the case
+in this sandbox) means the SDK is never initialised — zero overhead, nothing to
+opt out of. Set the DSN per environment via Secrets Manager to turn on exception
+capture, with the Sentry `release` tagged to the deployed commit SHA so a new
+error class ties back to the deploy that introduced it. Not in the code yet —
+Phase 10 deferred `django-prometheus` / Sentry until real AWS infra exists.
+
+---
+
+## 10. Interview cheat-sheet
 
 **"How do you deploy this?"**
-GitHub Actions on merge to `main`: build a Docker image tagged with the commit SHA,
-push to ECR, run DB migrations as a one-off Fargate task, then update the ECS
-service, which does a rolling replace behind an ALB with health checks. Rollback is
-re-pointing the service at the previous task-definition revision.
+GitHub Actions on merge to `main`: build one Docker image tagged with the commit
+SHA and push it to a shared ECR repo, then promote that same image through two
+environments — automatically to staging (migrate staging's RDS, rolling ECS
+replace behind an ALB), then to production behind a manual approval gate (a GitHub
+Environment with required reviewers). Each environment migrates its own RDS before
+its own rolling deploy. Rollback is re-pointing that environment's ECS service at
+the previous task-definition revision.
 
 **"Walk me through your CI/CD."**
 CI (every PR): four parallel jobs — ruff lint, pytest against a real Postgres+Redis,
 `pip-audit` for dependency CVEs, and a Docker build + `manage.py check --deploy`.
 `makemigrations --check` fails the build if a model changed without a migration.
-CD (merge to main): OIDC into AWS (no stored keys) → build/push to ECR → migrate →
-rolling ECS deploy with automatic rollback on failed health checks.
+CD (merge to main): OIDC into AWS (no stored keys) → build/push one SHA-tagged
+image → `deploy-staging` runs itself (migrate + rolling ECS deploy) → QA validates
+→ `deploy-production` waits on a required-reviewer approval, then does the same
+against prod's stack with the *identical* image. Continuous delivery, not
+continuous deployment — a human approves prod. Failed health checks trigger the
+ECS deployment circuit breaker's automatic rollback either way.
 
 **"How do you get zero-downtime deploys?"**
 Rolling replacement: ECS starts new containers, waits for their load-balancer

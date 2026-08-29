@@ -1,23 +1,53 @@
 name: Deploy (AWS ECS Fargate)
 
-# REFERENCE / DISABLED. `workflow_dispatch` only -- it never runs automatically and
-# is inert until the secrets/vars below exist. It documents the intended path from
-# a merged commit to running containers on AWS ECS Fargate. Full walkthrough:
-# docs/ops/deployment-django.md.
+# ============================================================================
+# REFERENCE / DISABLED.  This workflow never runs automatically and is inert
+# until the AWS side and the GitHub Environments / secrets / vars below exist.
+# It documents the intended promotion path for one merged commit:
+#
+#     build (once)  ->  deploy-staging (auto)  ->  deploy-production (manual gate)
+#
+# The image is built EXACTLY ONCE in `build`, tagged with the commit SHA, and
+# the SAME image object is promoted through staging and then production --
+# production is never a fresh `docker build`, so what QA validated on staging
+# is byte-for-byte what ships.  Full walkthrough: docs/ops/deployment-django.md
+# sections 6 and "Monitoring".
+#
+# This is continuous *delivery*, not continuous deployment: staging deploys
+# itself on merge, production waits for a human to approve.
 #
 # To make this live:
-#   1. Create the AWS side: ECR repo, ECS cluster + service, RDS Postgres,
-#      ElastiCache Redis, an IAM role GitHub can assume via OIDC.
-#   2. Add repo secrets: AWS_DEPLOY_ROLE_ARN
-#   3. Add repo vars: AWS_REGION, ECR_REPOSITORY, ECS_CLUSTER, ECS_SERVICE,
-#      ECS_TASK_FAMILY, CONTAINER_NAME
-#   4. Change the trigger to `push: branches: [main]` and delete this banner.
+#   1. AWS, TWO independent stacks (staging + production), each with its own:
+#        ECS cluster + service, RDS Postgres, ElastiCache Redis, ALB + target
+#        group + domain, and a `<family>-migrate` task definition.
+#      ONE shared ECR repository feeds both.
+#      Plus one IAM role per environment that GitHub assumes via OIDC.
+#   2. GitHub -> Settings -> Environments: create `staging` and `production`.
+#        - On `production`, add "Required reviewers" -- THAT is the approval
+#          gate: the deploy-production job parks in a "waiting" state until a
+#          listed reviewer approves the pending deployment in the UI.
+#        - Optionally restrict each environment's deployment branches to `main`.
+#   3. Environment-scoped secrets (Settings -> Environments -> <env> -> Secrets):
+#        AWS_DEPLOY_ROLE_ARN     -- the per-environment OIDC role ARN
+#   4. Environment-scoped vars (Settings -> Environments -> <env> -> Variables):
+#        ECS_CLUSTER, ECS_SERVICE, ECS_TASK_FAMILY, CONTAINER_NAME,
+#        PRIVATE_SUBNETS, SERVICE_SG
+#      Repository-level vars/secrets (shared by both environments):
+#        vars.AWS_REGION, vars.ECR_REPOSITORY, secrets.AWS_DEPLOY_ROLE_ARN
+#        (the last one is the build job's registry-push role; the deploy jobs
+#         shadow it with their environment-scoped copy automatically)
+#      Because every deploy step reads `vars.ECS_CLUSTER` & friends, the SAME
+#      step code targets staging or production purely by which `environment:`
+#      the job declares -- there is no per-environment branching in this YAML.
+#   5. Flip the trigger from `workflow_dispatch` to `push: branches: [main]`
+#      and delete this banner.
+# ============================================================================
 
 on:
   workflow_dispatch:
     inputs:
       image_tag:
-        description: "Image tag to deploy (defaults to the commit SHA)"
+        description: "Existing ECR tag to promote instead of building (defaults to this commit's SHA)"
         required: false
 
 permissions:
@@ -25,57 +55,135 @@ permissions:
   contents: read
 
 jobs:
-  deploy:
-    if: ${{ vars.AWS_REGION != '' }}   # stays skipped until the vars are configured
+  # --------------------------------------------------------------------------
+  # 1. build -- runs ONCE.  Build the image, push it to the shared ECR repo
+  #    tagged with the commit SHA, and export that image URI for the deploy
+  #    jobs.  No `environment:` -- this job touches nothing environment-scoped.
+  # --------------------------------------------------------------------------
+  build:
+    if: ${{ vars.AWS_REGION != '' }}   # stays skipped (and so do its dependents) until repo vars exist
     runs-on: ubuntu-latest
+    outputs:
+      image: ${{ steps.result.outputs.image }}
+      tag: ${{ steps.result.outputs.tag }}
     steps:
       - uses: actions/checkout@v4
 
-      # --- Authenticate to AWS with a short-lived OIDC token, no static keys ---
+      # Short-lived OIDC credentials, no static AWS keys in GitHub.
       - uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}   # repo-level: push-to-ECR permission
           aws-region: ${{ vars.AWS_REGION }}
 
       - uses: aws-actions/amazon-ecr-login@v2
         id: ecr
 
-      # --- Build the image and push it to ECR, tagged with the commit SHA ---
-      - name: Build and push
-        id: build
+      - name: Build and push the commit-SHA image
+        id: result
         env:
           REGISTRY: ${{ steps.ecr.outputs.registry }}
           REPO: ${{ vars.ECR_REPOSITORY }}
           TAG: ${{ github.event.inputs.image_tag || github.sha }}
         run: |
-          docker build -t "$REGISTRY/$REPO:$TAG" -t "$REGISTRY/$REPO:latest" .
-          docker push "$REGISTRY/$REPO:$TAG"
-          docker push "$REGISTRY/$REPO:latest"
-          echo "image=$REGISTRY/$REPO:$TAG" >> "$GITHUB_OUTPUT"
+          IMAGE="$REGISTRY/$REPO:$TAG"
+          # Idempotent: when we're re-running the workflow or promoting an
+          # already-built tag, reuse the existing image instead of rebuilding.
+          if aws ecr describe-images --repository-name "$REPO" --image-ids imageTag="$TAG" >/dev/null 2>&1; then
+            echo "Image $IMAGE already in ECR -- reusing it, no rebuild."
+          else
+            docker build -t "$IMAGE" .
+            docker push "$IMAGE"
+          fi
+          echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
 
-      # --- Run migrations as a one-off task BEFORE the rolling deploy ---
-      # Migrations must be backward-compatible (the old code keeps serving during
-      # the rollout) -- see the "expand / contract" section of the deploy doc.
-      - name: Run migrations (one-off ECS task)
+  # --------------------------------------------------------------------------
+  # 2. deploy-staging -- runs automatically as soon as `build` succeeds.
+  #    `environment: staging` carries NO required reviewers, so there is no
+  #    gate here.  Step order matters: migrate staging's RDS FIRST, then roll
+  #    the service onto the new task-definition revision.
+  # --------------------------------------------------------------------------
+  deploy-staging:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: staging
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}   # staging-scoped
+          aws-region: ${{ vars.AWS_REGION }}
+
+      # -- Migrate FIRST, as a one-off Fargate task, against staging's RDS.
+      #    Migrations must be backward-compatible (expand/contract) because the
+      #    old tasks keep serving through the rolling replace below.
+      #    See docs/ops/deployment-django.md section 7.
+      - name: Run migrations (staging RDS)
         run: |
           aws ecs run-task \
             --cluster "${{ vars.ECS_CLUSTER }}" \
             --task-definition "${{ vars.ECS_TASK_FAMILY }}-migrate" \
             --launch-type FARGATE \
-            --network-configuration "awsvpcConfiguration={subnets=[${{ vars.PRIVATE_SUBNETS }}],securityGroups=[${{ vars.SERVICE_SG }}]}" \
+            --network-configuration "awsvpcConfiguration={subnets=[${{ vars.PRIVATE_SUBNETS }}],securityGroups=[${{ vars.SERVICE_SG }}],assignPublicIp=DISABLED}" \
             --overrides '{"containerOverrides":[{"name":"${{ vars.CONTAINER_NAME }}","command":["python","manage.py","migrate","--noinput"]}]}'
+          # A real run would then `aws ecs wait tasks-stopped` and assert the
+          # container exit code is 0 before continuing.
 
-      # --- Point the service at a new task-definition revision with the new image;
-      #     ECS then does a rolling replace (start new, health-check, drain old) ---
-      - name: Render new task definition
+      - name: Render task definition with the promoted image (staging)
         id: taskdef
         uses: aws-actions/amazon-ecs-render-task-definition@v1
         with:
           task-definition-family: ${{ vars.ECS_TASK_FAMILY }}
           container-name: ${{ vars.CONTAINER_NAME }}
-          image: ${{ steps.build.outputs.image }}
+          image: ${{ needs.build.outputs.image }}   # the SHA-tagged image from `build`
 
-      - name: Deploy to ECS and wait for stable
+      - name: Deploy to staging ECS and wait for stable
+        uses: aws-actions/amazon-ecs-deploy-task-definition@v2
+        with:
+          task-definition: ${{ steps.taskdef.outputs.task-definition }}
+          cluster: ${{ vars.ECS_CLUSTER }}
+          service: ${{ vars.ECS_SERVICE }}
+          wait-for-service-stability: true   # ECS deployment circuit breaker auto-rolls-back a failed roll
+
+  # --------------------------------------------------------------------------
+  # 3. deploy-production -- `needs: deploy-staging`, so it only starts once
+  #    staging is green.  It then PARKS on the manual approval gate:
+  #    `environment: production` + "Required reviewers" in the GitHub
+  #    Environment settings.  A reviewer approves -> the job runs, pointed at
+  #    production's cluster/RDS via the production-scoped vars/secrets, and
+  #    deploys the EXACT same image staging just validated -- no rebuild.
+  # --------------------------------------------------------------------------
+  deploy-production:
+    needs: deploy-staging
+    runs-on: ubuntu-latest
+    environment: production   # required-reviewers on this environment = the approval gate
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}   # production-scoped
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Run migrations (production RDS)
+        run: |
+          aws ecs run-task \
+            --cluster "${{ vars.ECS_CLUSTER }}" \
+            --task-definition "${{ vars.ECS_TASK_FAMILY }}-migrate" \
+            --launch-type FARGATE \
+            --network-configuration "awsvpcConfiguration={subnets=[${{ vars.PRIVATE_SUBNETS }}],securityGroups=[${{ vars.SERVICE_SG }}],assignPublicIp=DISABLED}" \
+            --overrides '{"containerOverrides":[{"name":"${{ vars.CONTAINER_NAME }}","command":["python","manage.py","migrate","--noinput"]}]}'
+
+      - name: Render task definition with the promoted image (production)
+        id: taskdef
+        uses: aws-actions/amazon-ecs-render-task-definition@v1
+        with:
+          task-definition-family: ${{ vars.ECS_TASK_FAMILY }}
+          container-name: ${{ vars.CONTAINER_NAME }}
+          image: ${{ needs.build.outputs.image }}   # identical to what staging deployed
+
+      - name: Deploy to production ECS and wait for stable
         uses: aws-actions/amazon-ecs-deploy-task-definition@v2
         with:
           task-definition: ${{ steps.taskdef.outputs.task-definition }}

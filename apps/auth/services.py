@@ -7,6 +7,7 @@ from django.utils import timezone
 from apps.auth.repositories import OtpRepository, RefreshTokenRepository
 from apps.auth.tokens import hash_refresh_token, issue_access_token, issue_refresh_token
 from apps.common.email import EmailService
+from apps.common.enums import TenantStatus
 from apps.common.exceptions import AppError, NotFoundError
 from apps.tenants.repositories import MembershipRepository
 from apps.users.repositories import UserRepository
@@ -17,13 +18,30 @@ OTP_MAX_ATTEMPTS = 3
 OTP_LOCKOUT_MINUTES = 15
 
 
+def _assert_tenant_active(membership) -> None:
+    """Operator offboarding gate (ROADMAP.md Phase 15e). A SUSPENDED tenant's
+    users can't obtain or refresh a session -- combined with the 15-min access
+    token, this fully locks the tenant out within one token lifetime, with no
+    per-request DB check needed. `membership.tenant` is already select_related'd."""
+    if membership.tenant.status == TenantStatus.SUSPENDED:
+        raise AppError(
+            "This organization's access has been suspended. Contact your administrator.",
+            403, "TENANT_SUSPENDED",
+        )
+
+
 class AuthService:
     @staticmethod
     def request_otp(email: str) -> None:
         try:
-            UserRepository.get_by_email(email)
+            user = UserRepository.get_by_email(email)
         except NotFoundError:
             raise AppError(f"No account found for {email}", 404, "USER_NOT_FOUND") from None
+
+        try:
+            _assert_tenant_active(MembershipRepository.get_profile_for_user(user.id))
+        except NotFoundError:
+            pass  # no membership yet -- verify_otp will surface it; don't leak here
 
         existing = OtpRepository.get_by_email(email)
         resend_cutoff = timezone.now() - timedelta(seconds=OTP_RESEND_SECONDS)
@@ -74,6 +92,7 @@ class AuthService:
 
         user = UserRepository.get_by_email(email)
         membership = MembershipRepository.get_profile_for_user(user.id)
+        _assert_tenant_active(membership)
 
         OtpRepository.delete_by_email(email)
         UserRepository.update_last_login(user)
@@ -110,6 +129,7 @@ class AuthService:
 
         user = existing.user
         membership = MembershipRepository.get_profile_for_user(user.id)
+        _assert_tenant_active(membership)
         access_token = issue_access_token(user.id, membership.tenant_id, membership.role_level)
         raw_refresh, refresh_hash, refresh_expires_at = issue_refresh_token()
         RefreshTokenRepository.create(user, refresh_hash, refresh_expires_at)

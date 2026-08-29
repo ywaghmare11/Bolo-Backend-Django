@@ -5,7 +5,7 @@ from celery import shared_task
 from django.utils import timezone
 
 from apps.common import caching
-from apps.common.enums import NotificationType, TaskStatus
+from apps.common.enums import NotificationType, TaskStatus, TenantStatus
 from apps.notifications.services import dispatch_notification
 from apps.tasks.models import Task
 
@@ -61,6 +61,7 @@ def task_due_proximity_sweep():
 
     due_today = Task.objects.filter(
         status__in=ACTIVE_STATUSES, due_date__date=today, due_today_notified_at__isnull=True,
+        tenant__status=TenantStatus.ACTIVE,
     ).select_related("assignee", "assigner")
     for task in due_today:
         _notify_due_proximity(task, NotificationType.TASK_DUE_TODAY)
@@ -69,6 +70,7 @@ def task_due_proximity_sweep():
 
     due_tomorrow = Task.objects.filter(
         status__in=ACTIVE_STATUSES, due_date__date=tomorrow, due_tomorrow_notified_at__isnull=True,
+        tenant__status=TenantStatus.ACTIVE,
     ).select_related("assignee", "assigner")
     for task in due_tomorrow:
         _notify_due_proximity(task, NotificationType.TASK_DUE_TOMORROW)
@@ -79,6 +81,7 @@ def task_due_proximity_sweep():
     # after its due date onward.
     newly_overdue = Task.objects.filter(
         status__in=ACTIVE_STATUSES, due_date__lt=start_of_today,
+        tenant__status=TenantStatus.ACTIVE,
     ).select_related("assignee", "assigner")
     for task in newly_overdue:
         task.status = TaskStatus.OVERDUE

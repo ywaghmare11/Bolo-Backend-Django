@@ -12,6 +12,16 @@ class OrgRoleLevel(models.TextChoices):
     EXECUTOR = "EXECUTOR", "Executor"
 
 
+class TenantStatus(models.TextChoices):
+    """Tenant lifecycle for operator offboarding (ROADMAP.md Phase 15e).
+    SUSPENDED = access cut, all data retained, fully reversible -- used when a
+    customer leaves BOLO or stops paying. There is deliberately no hard-delete
+    state here; a purge is a separate, later, export-first step (W58)."""
+
+    ACTIVE = "ACTIVE", "Active"
+    SUSPENDED = "SUSPENDED", "Suspended"
+
+
 class PlatformAdminRole(models.TextChoices):
     """RBAC tier for a PlatformAdmin (the operator team that onboards tenants).
     One tier up from OrgRoleLevel and a completely separate axis. Only
@@ -115,6 +125,10 @@ class AuditAction(models.TextChoices):
     MEMBER_ADDED = "MEMBER_ADDED", "Member Added"
     MEMBER_REMOVED = "MEMBER_REMOVED", "Member Removed"
     MEMBERS_BULK_IMPORTED = "MEMBERS_BULK_IMPORTED", "Members Bulk Imported"
+    # Tenant offboarding (ROADMAP.md Phase 15e) -- bolo-backend-django additions,
+    # no upstream equivalent (upstream has no tenant-lifecycle surface at all).
+    TENANT_SUSPENDED = "TENANT_SUSPENDED", "Tenant Suspended"
+    TENANT_REACTIVATED = "TENANT_REACTIVATED", "Tenant Reactivated"
     # Comment
     COMMENT_CREATED = "COMMENT_CREATED", "Comment Created"
     COMMENT_UPDATED = "COMMENT_UPDATED", "Comment Updated"

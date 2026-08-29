@@ -2390,7 +2390,7 @@ Dedup within the file is case-insensitive (last row wins; earlier duplicate rows
 
 ---
 
-## 22. Platform Admin (Superadmin) *(upstream built 2026-07-15, W35/W98 resolved — core CRUD built here 2026-08-23: OTP auth, create/list tenant, add/remove member. RBAC (`PlatformAdmin.role` + `HasPlatformAdminRole`) built 2026-08-29 (Phase 15a); `AuditLog` wiring for `TENANT_CREATED`/`MEMBER_ADDED`/`MEMBER_REMOVED` built 2026-08-29 (Phase 15b); `.xlsx`/`.csv`/`.json` member bulk-import ETL + `MEMBERS_BULK_IMPORTED` audit built 2026-08-29 (Phase 15c). **Deferred, explicitly not built:** the standalone admin console SPA (Phase 15d) — see CLAUDE.md)*
+## 22. Platform Admin (Superadmin) *(upstream built 2026-07-15, W35/W98 resolved — core CRUD built here 2026-08-23: OTP auth, create/list tenant, add/remove member. RBAC (`PlatformAdmin.role` + `HasPlatformAdminRole`) built 2026-08-29 (Phase 15a); `AuditLog` wiring for `TENANT_CREATED`/`MEMBER_ADDED`/`MEMBER_REMOVED` built 2026-08-29 (Phase 15b); `.xlsx`/`.csv`/`.json` member bulk-import ETL + `MEMBERS_BULK_IMPORTED` audit built 2026-08-29 (Phase 15c); tenant suspend/reactivate offboarding (`PATCH .../tenants/:id`, `TENANT_SUSPENDED`/`TENANT_REACTIVATED`) built 2026-08-29 (Phase 15e). **Deferred, explicitly not built:** the standalone admin console SPA (Phase 15d), and a hard tenant purge (export-first, W58) — see CLAUDE.md)*
 
 A `PlatformAdmin` is a cross-tenant actor, outside `Tenant`/RLS scoping entirely — not a `User`, not a `TenantMembership` role. It registers new tenants and can add/remove users in **any** tenant. No self-registration: rows are provisioned only via an ops-run seed script. See `docs/architecture/domain-model.md`'s "PlatformAdmin" section for the model shape.
 
@@ -2480,8 +2480,31 @@ Response 201:
 
 ```json
 Response 200:
-{ "data": [ { "tenantId": "uuid", "name": "ABC College", "vertical": "EDUCATION", "createdAt": "...", "memberCount": 42, "departmentCount": 5 } ] }
+{ "data": [ { "tenantId": "uuid", "name": "ABC College", "vertical": "EDUCATION", "status": "ACTIVE", "createdAt": "...", "memberCount": 42, "departmentCount": 5 } ] }
 ```
+
+`status` is `ACTIVE` | `SUSPENDED` (Phase 15e).
+
+---
+
+### PATCH /platform-admin/tenants/:tenantId — suspend / reactivate a tenant *(built here 2026-08-29, ROADMAP.md Phase 15e — no upstream equivalent)*
+
+Operator **offboarding**: cut a whole tenant's access when a customer leaves BOLO or stops paying, and restore it later. All tenant data is retained either way. There is **no `DELETE`** — a hard purge is a separate, export-first step (`W58`), not built.
+
+```json
+Request:  { "status": "SUSPENDED", "reason": "customer offboarded" }   // reason optional
+Response 200:
+{ "data": { "tenantId": "uuid", "name": "ABC College", "vertical": "EDUCATION", "urlSlug": "abc-college",
+            "status": "SUSPENDED", "suspendedAt": "...", "suspensionReason": "customer offboarded", "createdAt": "..." } }
+```
+
+- `status` — `ACTIVE` | `SUSPENDED` (required). Only the lifecycle status is mutable here; name/vertical/slug are set once at creation.
+- **While `SUSPENDED`:** this tenant's users get `403 TENANT_SUSPENDED` on `POST /auth/request-otp`, `POST /auth/verify-otp`, and `POST /auth/refresh` — so any live session dies within the 15-minute access-token lifetime. Its due-date and AI-nudge Celery sweeps don't fire. `POST .../members` and `POST .../members/import` return `409 TENANT_SUSPENDED`.
+- Reactivating (`status: "ACTIVE"`) clears `suspendedAt` / `suspensionReason` and restores all of the above.
+
+Writes one `AuditLog` row: `action: TENANT_SUSPENDED` or `TENANT_REACTIVATED`, `actorType: PLATFORM_ADMIN`, `actorId: null`, `entityType: "TENANT"`, `before`/`after` = `{ status, suspension_reason }`, `metadata: { platformAdminId, platformAdminEmail }`.
+
+**Errors:** 400 `VALIDATION_ERROR` (unknown `status`) · 404 `NOT_FOUND` · 409 `TENANT_STATUS_UNCHANGED` (already in that status) · 401
 
 ---
 
@@ -2499,7 +2522,7 @@ Response 201:
 
 **Audit (built 2026-08-29, Phase 15b):** `AuditLog` row — `action: MEMBER_ADDED`, `actorType: PLATFORM_ADMIN`, `actorId: null`, `entityType: "USER"`, `entityId` = the new user, `tenant` = the path `:tenantId`, `after: { tenant_id, preferred_lang }`, `metadata: { platformAdminId, platformAdminEmail }`. See the note on `POST /platform-admin/tenants` above.
 
-**Errors:** 400 `VALIDATION_ERROR` · 400 `EMAIL_ALREADY_IN_TENANT` · 404 `NOT_FOUND` (tenant) · 401
+**Errors:** 400 `VALIDATION_ERROR` · 400 `EMAIL_ALREADY_IN_TENANT` · 404 `NOT_FOUND` (tenant) · 409 `TENANT_SUSPENDED` (tenant is suspended — reactivate it first) · 401
 
 ---
 
@@ -2551,7 +2574,7 @@ Response 200:
 
 Writes one `AuditLog` row: `action: MEMBERS_BULK_IMPORTED`, `actorType: PLATFORM_ADMIN`, `actorId: null`, `entityType: "TENANT"`, `entityId` + `tenant` = the target tenant, `metadata: { platformAdminId, platformAdminEmail, created, updated, skipped }` (the run's scale is on the audit row, not only the HTTP response).
 
-**Errors:** 400 `INVALID_FILE` (missing/oversized file, unsupported extension, unparseable content, missing a required column, empty, over the row cap) · 404 `NOT_FOUND` (tenant) · 401
+**Errors:** 400 `INVALID_FILE` (missing/oversized file, unsupported extension, unparseable content, missing a required column, empty, over the row cap) · 404 `NOT_FOUND` (tenant) · 409 `TENANT_SUSPENDED` · 401
 
 ---
 

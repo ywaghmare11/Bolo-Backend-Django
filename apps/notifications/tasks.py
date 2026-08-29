@@ -3,7 +3,7 @@ from smtplib import SMTPException
 from celery import shared_task
 from django.utils import timezone
 
-from apps.common.enums import AcceptanceStatus, NotificationType
+from apps.common.enums import AcceptanceStatus, NotificationType, TenantStatus
 from apps.notifications.models import Notification, NudgeSkipCounter
 from apps.notifications.nudge_rules import (
     ACTIVE_STATUSES,
@@ -26,6 +26,7 @@ _FOLLOWUP_MESSAGES = {
 def _accepted_active_tasks():
     return Task.objects.filter(
         status__in=ACTIVE_STATUSES, acceptance_status=AcceptanceStatus.ACCEPTED,
+        tenant__status=TenantStatus.ACTIVE,  # no AI nudges for a suspended tenant (Phase 15e)
     ).select_related("assignee", "assigner")
 
 

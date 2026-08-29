@@ -1,3 +1,6 @@
+from django.utils import timezone
+
+from apps.common.enums import TenantStatus
 from apps.common.exceptions import NotFoundError
 from apps.tenants.models import Department, Tenant, TenantMembership
 
@@ -35,6 +38,20 @@ class TenantRepository:
     @staticmethod
     def create(name: str, url_slug: str, vertical: str) -> Tenant:
         return Tenant.objects.create(name=name, url_slug=url_slug, vertical=vertical)
+
+    @staticmethod
+    def set_status(tenant: Tenant, status: str, reason: str | None = None) -> Tenant:
+        """Operator offboarding (ROADMAP.md Phase 15e). Suspending stamps
+        suspended_at + reason; reactivating clears both."""
+        tenant.status = status
+        if status == TenantStatus.SUSPENDED:
+            tenant.suspended_at = timezone.now()
+            tenant.suspension_reason = reason or None
+        else:
+            tenant.suspended_at = None
+            tenant.suspension_reason = None
+        tenant.save(update_fields=["status", "suspended_at", "suspension_reason", "updated_at"])
+        return tenant
 
     @staticmethod
     def list_with_counts() -> list[Tenant]:

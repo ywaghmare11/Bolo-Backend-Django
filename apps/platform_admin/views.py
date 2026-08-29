@@ -10,8 +10,10 @@ from apps.platform_admin.authentication import PlatformAdminCookieJWTAuthenticat
 from apps.platform_admin.serializers import (
     AddMemberSerializer,
     CreateTenantSerializer,
+    UpdateTenantSerializer,
     serialize_added_member,
     serialize_tenant_created,
+    serialize_tenant_detail,
     serialize_tenant_list_item,
 )
 from apps.platform_admin.services import PlatformAdminAuthService, PlatformAdminTenantService
@@ -92,6 +94,25 @@ class PlatformAdminTenantListCreateView(APIView):
         )
         data = serialize_tenant_created(result["tenant"], result["admin_user"], result["role_label"])
         return success_response(data, "Tenant registered", status=201)
+
+
+class PlatformAdminTenantDetailView(APIView):
+    """PATCH /platform-admin/tenants/:tenantId -- operator offboarding
+    (ROADMAP.md Phase 15e). Suspend / reactivate a whole tenant. No DELETE:
+    a hard purge is a separate, export-first step (W58), not built here."""
+
+    authentication_classes = [PlatformAdminCookieJWTAuthentication]
+    permission_classes = [IsAuthenticated, HasPlatformAdminRole([PlatformAdminRole.SUPER_ADMIN])]
+
+    def patch(self, request, tenant_id):
+        serializer = UpdateTenantSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        d = serializer.validated_data
+
+        tenant = PlatformAdminTenantService.set_tenant_status(
+            tenant_id, status=d["status"], reason=d.get("reason"),
+        )
+        return success_response(serialize_tenant_detail(tenant), "Tenant updated")
 
 
 class PlatformAdminTenantMembersView(APIView):

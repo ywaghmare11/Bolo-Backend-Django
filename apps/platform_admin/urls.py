@@ -4,6 +4,7 @@ from apps.platform_admin.views import (
     PlatformAdminLogoutView,
     PlatformAdminMemberImportView,
     PlatformAdminRequestOtpView,
+    PlatformAdminTenantDetailView,
     PlatformAdminTenantListCreateView,
     PlatformAdminTenantMemberDetailView,
     PlatformAdminTenantMembersView,
@@ -15,6 +16,11 @@ urlpatterns = [
     path("auth/verify-otp/", PlatformAdminVerifyOtpView.as_view(), name="platform-admin-verify-otp"),
     path("auth/logout/", PlatformAdminLogoutView.as_view(), name="platform-admin-logout"),
     path("tenants/", PlatformAdminTenantListCreateView.as_view(), name="platform-admin-tenants"),
+    path(
+        "tenants/<uuid:tenant_id>/",
+        PlatformAdminTenantDetailView.as_view(),
+        name="platform-admin-tenant-detail",
+    ),
     path(
         "tenants/<uuid:tenant_id>/members/",
         PlatformAdminTenantMembersView.as_view(),

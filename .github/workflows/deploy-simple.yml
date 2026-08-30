@@ -1,0 +1,137 @@
+name: Deploy to AWS ECS (single environment)
+
+# ============================================================================
+# Beginner / free-tier path -- ONE environment, HTTP-only ALB, no NAT, no domain.
+# Full step-by-step setup: docs/ops/aws-deploy-from-scratch.md
+#
+#     build (once)  ->  deploy (migrate + rolling web/worker update)
+#
+# This is intentionally simpler than deploy.yml (the staging -> approval ->
+# production promotion), which is the "next step up" once this is comfortable.
+#
+# To make it live:
+#   1. Follow docs/ops/aws-deploy-from-scratch.md steps 1-16 to create the AWS
+#      resources (ECR repo, RDS, ElastiCache, IAM roles, task definitions, ALB,
+#      ECS cluster + bolo-web / bolo-worker services).
+#   2. Register the GitHub OIDC provider + the bolo-gha-deploy role (step 10c).
+#   3. Repo -> Settings -> Secrets and variables -> Actions -> New secret:
+#        AWS_DEPLOY_ROLE_ARN = arn:aws:iam::<acct>:role/bolo-gha-deploy
+#   4. Edit the `env:` block below with your real SUBNETS + SECURITY_GROUP ids
+#      (and the names, if you didn't use the `bolo-` prefix from the runbook).
+#   5. (Optional) Repo -> Settings -> Environments -> create `production` and add
+#      yourself as a Required reviewer to gate each deploy on a manual approval.
+#      If you skip this, delete the `environment: production` line below.
+# ============================================================================
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: "Existing ECR tag to redeploy instead of building (rollback)"
+        required: false
+
+permissions:
+  id-token: write      # mint the GitHub -> AWS OIDC token
+  contents: read
+
+env:
+  AWS_REGION:      ap-south-1
+  ECR_REPOSITORY:  bolo-backend
+  ECS_CLUSTER:     bolo-cluster
+  WEB_SERVICE:     bolo-web
+  WORKER_SERVICE:  bolo-worker
+  WEB_FAMILY:      bolo-web
+  WORKER_FAMILY:   bolo-worker
+  MIGRATE_FAMILY:  bolo-migrate
+  SUBNETS:         "subnet-REPLACE_A,subnet-REPLACE_B"   # SUBNET_A,SUBNET_B from the runbook
+  SECURITY_GROUP:  "sg-REPLACE_ECS"                       # SG_ECS from the runbook
+
+jobs:
+  # 1. Build the image once, tag it with the commit SHA, push to ECR.
+  build:
+    runs-on: ubuntu-latest
+    outputs:
+      image: ${{ steps.out.outputs.image }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+      - uses: aws-actions/amazon-ecr-login@v2
+        id: ecr
+      - name: Build & push (reuse the image if the tag already exists)
+        id: out
+        env:
+          REGISTRY: ${{ steps.ecr.outputs.registry }}
+          TAG: ${{ github.event.inputs.image_tag || github.sha }}
+        run: |
+          IMAGE="$REGISTRY/$ECR_REPOSITORY:$TAG"
+          if aws ecr describe-images --repository-name "$ECR_REPOSITORY" \
+               --image-ids imageTag="$TAG" >/dev/null 2>&1; then
+            echo "reusing $IMAGE (already in ECR)"
+          else
+            docker build -t "$IMAGE" .
+            docker push "$IMAGE"
+          fi
+          echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
+
+  # 2. Migrate the DB (gated), then roll web + worker onto the new image.
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: production      # delete this line if you didn't create the env
+    steps:
+      - uses: actions/checkout@v4
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      # Run migrations as a one-off Fargate task BEFORE any new code rolls, and
+      # fail the whole job on a non-zero container exit code.
+      - name: Run migrations
+        run: |
+          TASK_ARN=$(aws ecs run-task \
+            --cluster "$ECS_CLUSTER" --task-definition "$MIGRATE_FAMILY" \
+            --launch-type FARGATE \
+            --network-configuration "awsvpcConfiguration={subnets=[$SUBNETS],securityGroups=[$SECURITY_GROUP],assignPublicIp=ENABLED}" \
+            --query 'tasks[0].taskArn' --output text)
+          echo "migrate task: $TASK_ARN"
+          aws ecs wait tasks-stopped --cluster "$ECS_CLUSTER" --tasks "$TASK_ARN"
+          EXIT=$(aws ecs describe-tasks --cluster "$ECS_CLUSTER" --tasks "$TASK_ARN" \
+            --query 'tasks[0].containers[0].exitCode' --output text)
+          echo "migrate exit code: $EXIT"
+          test "$EXIT" = "0"
+
+      - name: Render web task definition with the built image
+        id: web
+        uses: aws-actions/amazon-ecs-render-task-definition@v1
+        with:
+          task-definition-family: ${{ env.WEB_FAMILY }}
+          container-name: web
+          image: ${{ needs.build.outputs.image }}
+      - name: Deploy web service (rolling, wait for stable)
+        uses: aws-actions/amazon-ecs-deploy-task-definition@v2
+        with:
+          task-definition: ${{ steps.web.outputs.task-definition }}
+          cluster: ${{ env.ECS_CLUSTER }}
+          service: ${{ env.WEB_SERVICE }}
+          wait-for-service-stability: true
+
+      - name: Render worker task definition with the built image
+        id: worker
+        uses: aws-actions/amazon-ecs-render-task-definition@v1
+        with:
+          task-definition-family: ${{ env.WORKER_FAMILY }}
+          container-name: web           # container is still named "web" in the worker task def
+          image: ${{ needs.build.outputs.image }}
+      - name: Deploy worker service (rolling, wait for stable)
+        uses: aws-actions/amazon-ecs-deploy-task-definition@v2
+        with:
+          task-definition: ${{ steps.worker.outputs.task-definition }}
+          cluster: ${{ env.ECS_CLUSTER }}
+          service: ${{ env.WORKER_SERVICE }}
+          wait-for-service-stability: true

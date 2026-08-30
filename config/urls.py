@@ -15,6 +15,7 @@ Including another URLconf
     2. Add a URL to urlpatterns:  path('blog/', include('blog.urls'))
 """
 from django.contrib import admin
+from django.http import JsonResponse
 from django.urls import include, path
 from drf_spectacular.views import (
     SpectacularAPIView,
@@ -27,7 +28,19 @@ from apps.evidence.views import EvidencePresignView
 from apps.tasks.views import VoicePresignView
 from apps.users.views import ProfilePicturePresignView
 
+
+def healthz(_request):
+    """Liveness probe for the load balancer -- no auth, no DB, no cache.
+
+    The ALB target group health-checks this path (docs/ops/aws-deploy-from-scratch.md
+    §14); it must stay a plain Django view so it never touches Postgres/Redis and
+    isn't gated by DRF authentication.
+    """
+    return JsonResponse({"status": "ok"})
+
+
 urlpatterns = [
+    path('healthz', healthz, name='healthz'),
     path('admin/', admin.site.urls),
     # OpenAPI 3 schema + browsable docs (ROADMAP.md Phase 13). /schema/ returns the
     # raw spec; /docs/ and /redoc/ are the two HTML explorers over it.

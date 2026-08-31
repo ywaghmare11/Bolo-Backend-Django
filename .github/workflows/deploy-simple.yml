@@ -45,8 +45,8 @@ env:
   WEB_FAMILY:      bolo-web
   WORKER_FAMILY:   bolo-worker
   MIGRATE_FAMILY:  bolo-migrate
-  SUBNETS:         "subnet-REPLACE_A,subnet-REPLACE_B"   # SUBNET_A,SUBNET_B from the runbook
-  SECURITY_GROUP:  "sg-REPLACE_ECS"                       # SG_ECS from the runbook
+  SUBNETS:         "subnet-0ebd2a04192264af3,subnet-0924febfe55db1dae"   # SUBNET_A,SUBNET_B from the runbook
+  SECURITY_GROUP:  "sg-0e9d44188dca3153a"                       # SG_ECS from the runbook
 
 jobs:
   # 1. Build the image once, tag it with the commit SHA, push to ECR.

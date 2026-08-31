@@ -37,7 +37,7 @@ permissions:
   contents: read
 
 env:
-  AWS_REGION:      ap-south-1
+  AWS_REGION:      ap-southeast-2
   ECR_REPOSITORY:  bolo-backend
   ECS_CLUSTER:     bolo-cluster
   WEB_SERVICE:     bolo-web
